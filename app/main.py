@@ -1,36 +1,29 @@
-from app.providers.azure.servicebus_client import (
-    get_receiver
+from fastapi import FastAPI
+from contextlib import asynccontextmanager
+import threading
+from app.config.settings import Settings
+
+from app.api.routes import router
+from app.listener import start_listener
+
+
+
+@asynccontextmanager
+async def lifespan(app):
+
+    listener_thread = threading.Thread(
+        target=start_listener,
+        daemon=True
+    )
+
+    listener_thread.start()
+
+    yield
+
+app = FastAPI(
+    title="File Scan App",
+    version="1.0.0",
+    lifespan=lifespan
 )
 
-from app.providers.azure.processor import (
-    process_message
-)
-
-receiver = get_receiver()
-
-with receiver:
-
-    while True:
-
-        messages = receiver.receive_messages(
-            max_message_count=10,
-            max_wait_time=5
-        )
-
-        for message in messages:
-
-            try:
-
-                process_message(message)
-
-                receiver.complete_message(
-                    message
-                )
-
-            except Exception as ex:
-
-                print(ex)
-
-                receiver.abandon_message(
-                    message
-                )
+app.include_router(router)
