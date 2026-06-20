@@ -11,22 +11,6 @@ from app.logging.otel_logger import (
 )
 
 
-def fetch_blob_name():
-
-    source_client = get_blob_service(
-        Settings.SOURCE_STORAGE_ACCOUNT
-    )
-
-    container_client = source_client.get_container_client(Settings.SOURCE_CONTAINER)
-
-    try:
-        blob_list = container_client.list_blobs()
-        first_blob = next(blob_list, None)
-        return first_blob.name
-    except StopIteration:
-        print("Container is empty!")
-
-
 def copy_blob(file_name):
 
     source_client = get_blob_service(
@@ -75,9 +59,6 @@ def process_message(message):
     payload = json.loads(body)
 
     print("Type of Logs after change: ", type(payload))
-
-    #file_name = fetch_blob_name()
-    #print("SOURCE_CONTAINER_FILE: ",file_name)
 
     
     result = payload["data"]["scanResultType"]

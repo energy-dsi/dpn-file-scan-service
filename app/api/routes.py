@@ -3,9 +3,6 @@ from typing import Any
 from app.providers.azure.storage_client import (
     list_blobs
 )
-from app.models.servicebus import (
-    ServiceBusRequest
-)
 from app.providers.azure.servicebus_client import (
     send_message
 )

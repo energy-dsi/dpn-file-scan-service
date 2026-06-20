@@ -26,15 +26,15 @@ def start_listener():
 
                     process_message(message)
 
-                    """ receiver.complete_message(
+                    receiver.complete_message(
                         message
                     )
- """
+
                 except Exception as ex:
 
                     print(ex)
 
-                    """ receiver.abandon_message(
+                    receiver.abandon_message(
                         message
-                    ) """
+                    )
  
