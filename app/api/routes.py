@@ -1,67 +1,51 @@
 from fastapi import APIRouter, HTTPException
-from typing import Any
-from app.providers.azure.storage_client import (
-    list_blobs
-)
-from app.providers.azure.servicebus_client import (
-    send_message, peek_messages
-)
+
 from app.config.settings import Settings
+from app.providers.azure.servicebus_client import peek_messages
+from app.providers.azure.storage_client import list_blobs
 
 router = APIRouter()
 
+
 @router.get("/health")
 def health_check():
-    
-    return {
-        "status":"UP"
-    }
+
+    return {"status": "UP"}
+
 
 @router.get("/version")
 def version():
-    
-    return{
-        "application":"file-scan-app",
-        "version":"1.0.0"
-    }
+
+    return {"application": "file-scan-app", "version": "1.0.0"}
+
 
 @router.get("/outbound/files")
 def get_outbound_files():
     try:
-        files = list_blobs(
-            Settings.DEST_CONTAINER
-        )
+        files = list_blobs(Settings.DEST_CONTAINER)
         return {
             "container": Settings.DEST_CONTAINER,
             "count": len(files),
-            "files": files
+            "files": files,
         }
     except Exception as ex:
-        raise HTTPException(
-            status_code=500,
-            detail=str(ex)
-        )
+        raise HTTPException(status_code=500, detail=str(ex))
+
 
 @router.get("/inbound/files")
 def get_inbound_files():
     try:
-        files = list_blobs(
-            Settings.SOURCE_CONTAINER
-        )
+        files = list_blobs(Settings.SOURCE_CONTAINER)
         return {
             "container": Settings.SOURCE_CONTAINER,
             "count": len(files),
-            "files": files
+            "files": files,
         }
     except Exception as ex:
-        raise HTTPException(
-            status_code=500,
-            detail=str(ex)
-        )
+        raise HTTPException(status_code=500, detail=str(ex))
+
 
 @router.get("/servicebus/messages")
-
 def get_servicebus_messages():
 
     return peek_messages()
- 
