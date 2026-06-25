@@ -10,8 +10,13 @@ class Settings:
     CLOUD_PROVIDER_TYPE = os.getenv("CLOUD_PROVIDER_TYPE", "AZURE")
 
     TENANT_ID = os.getenv("TENANT_ID")
-    CLIENT_ID = os.getenv("CLIENT_ID")
-    CLIENT_SECRET = os.getenv("CLIENT_SECRET")
+    CLIENT_ID_FILE = os.getenv(
+        "CLIENT_ID_FILE"
+    )
+
+    CLIENT_SECRET_FILE = os.getenv(
+        "CLIENT_SECRET_FILE"
+    )
 
     SERVICE_BUS_NAMESPACE = os.getenv("SERVICE_BUS_NAMESPACE")
 
