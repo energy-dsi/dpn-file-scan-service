@@ -4,7 +4,7 @@ from app.providers.azure.storage_client import (
     list_blobs
 )
 from app.providers.azure.servicebus_client import (
-    send_message
+    send_message, peek_messages
 )
 from app.config.settings import Settings
 
@@ -59,23 +59,9 @@ def get_inbound_files():
             detail=str(ex)
         )
 
-@router.post("/servicebus/send")
+@router.post("/servicebus/messages")
 
-def publish_message():
+def get_servicebus_messages():
 
-    try:
-
-        send_message(payload)
-
-        return {
-            "status": "SUCCESS",
-            "message": "Message published"
-        }
-
-    except Exception as ex:
-
-        raise HTTPException(
-            status_code=500,
-            detail=str(ex)
-        )
+    return peek_messages()
  
