@@ -1,4 +1,5 @@
 import json
+from time import sleep
 
 from app.config.settings import Settings
 
@@ -38,14 +39,45 @@ def copy_blob(file_name):
             Settings.DEST_CONTAINER,
             file_name
         )
+        
+    copy_operation = (
+        dest_blob.start_copy_from_url(
+            source_blob.url
+        )
+    )
 
-    print("dest_blob: ", dest_blob)
+    copy_id = copy_operation["copy_id"]
 
-    data = source_blob.download_blob().readall()
+    while True:
 
-    dest_blob.upload_blob(
-        data,
-        overwrite=True
+        properties = dest_blob.get_blob_properties()
+
+        status = (
+            properties.copy.status
+        )
+
+        if status == "success":
+            break
+
+        if status == "failed":
+            raise Exception(
+                "Blob copy failed"
+            )
+            
+        sleep(1)
+        
+    if dest_blob.exists():
+
+        source_blob.delete_blob()
+
+    else:
+
+        raise Exception(
+            "Destination blob not found"
+        )
+        
+    print(
+        f"Copied and deleted: {file_name}"
     )
 
 
@@ -77,7 +109,7 @@ def process_message(message):
             file_name,
             source_location,
             scan_result,
-            "COPIED"
+            "COPIED_AND_DELETED"
         )
     else:
         print("Malicious!")
