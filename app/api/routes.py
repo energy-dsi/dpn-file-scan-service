@@ -59,7 +59,7 @@ def get_inbound_files():
             detail=str(ex)
         )
 
-@router.post("/servicebus/messages")
+@router.get("/servicebus/messages")
 
 def get_servicebus_messages():
 
