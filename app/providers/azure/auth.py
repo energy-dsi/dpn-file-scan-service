@@ -28,6 +28,10 @@ def get_credential():
     client_secret = read_secret(
         Settings.CLIENT_SECRET_FILE
     )
+    
+    print(
+        f"CLIENT_ID length={len(client_id)}"
+    )
 
     return ClientSecretCredential(
         tenant_id=Settings.TENANT_ID,
