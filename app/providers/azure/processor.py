@@ -1,4 +1,5 @@
 import json
+import time
 from time import sleep
 
 from app.config.settings import Settings
@@ -26,6 +27,8 @@ def copy_blob(file_name):
     # copy_operation = dest_blob.start_copy_from_url(source_blob.url)
 
     # copy_id = copy_operation["copy_id"]
+    timeout = 60
+    start = time.time()
 
     while True:
 
@@ -38,6 +41,11 @@ def copy_blob(file_name):
 
         if status == "failed":
             raise Exception("Blob copy failed")
+
+        if time.time() - start > timeout:
+            raise TimeoutError(
+                "Blob copy timed out"
+            )
 
         sleep(1)
 

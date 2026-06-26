@@ -1,8 +1,27 @@
+"""
+Azure Service Bus listener.
+
+This module continuously listens for messages from the configured
+Azure Service Bus subscription, processes each message, and completes
+or abandons it based on the processing result.
+"""
+
+import logging
+import time
+
 from app.providers.azure.processor import process_message
 from app.providers.azure.servicebus_client import get_receiver
 
+logger = logging.getLogger(__name__)
+
 
 def start_listener():
+    """
+    Start listening for Azure Service Bus messages.
+
+    Messages are processed one at a time. Successfully processed
+    messages are completed, while failed messages are abandoned.
+    """
 
     receiver = get_receiver()
 
@@ -10,43 +29,69 @@ def start_listener():
 
         while True:
 
-            messages = receiver.receive_messages(max_message_count=10, max_wait_time=5)
+            messages = receiver.receive_messages(
+                max_message_count=10,
+                max_wait_time=5
+            )
 
             for message in messages:
 
                 try:
 
-                    print(f"Locked Until: " f"{message.locked_until_utc}")
+                    logger.info(
+                        "Locked Until: %s",
+                        message.locked_until_utc
+                    )
 
-                    print(f"Delivery Count: " f"{message.delivery_count}")
+                    logger.info(
+                        "Delivery Count: %s",
+                        message.delivery_count
+                    )
 
                     process_message(message)
 
-                    print(f"Completing message: {message.message_id}")
+                    logger.info(
+                        "Completing message: %s",
+                        message.message_id
+                    )
+
+                    start = time.time()
+
+                    logger.info(
+                        "Calling complete_message..."
+                    )
+
+                    receiver.complete_message(message)
+
+                    logger.info(
+                        "complete_message returned in %.2f seconds",
+                        time.time() - start
+                    )
+
+                    logger.info(
+                        "Completed message: %s",
+                        message.message_id
+                    )
+
+                except Exception as ex:  # pylint: disable=broad-exception-caught
+
+                    logger.exception(
+                        "Message processing failed: %s",
+                        ex
+                    )
 
                     try:
-                        import time
 
-                        start = time.time()
-                        print("Calling complete_message...")
+                        receiver.abandon_message(message)
 
-                        receiver.complete_message(message)
-                        print(
-                            f"complete_message returned in "
-                            f"{time.time() - start:.2f} seconds"
+                        logger.info(
+                            "Message abandoned: %s",
+                            message.message_id
                         )
 
-                        print(f"Completed message: {message.message_id}")
+                    except Exception as abandon_ex:  # pylint: disable=broad-exception-caught
 
-                    except Exception as complete_ex:
-                        print(f"Complete Failed: " f"{type(complete_ex).__name__}")
-                        print(f"ERROR: {complete_ex}")
-                        raise
-
-                except Exception as ex:
-
-                    print(f"Process Failed: {ex}")
-                    try:
-                        receiver.abandon_message(message)
-                    except Exception as abandon_ex:
-                        print(f"Abandon Failed: " f"{abandon_ex}")
+                        logger.exception(
+                            "Failed to abandon message: %s",
+                            abandon_ex
+                        )
