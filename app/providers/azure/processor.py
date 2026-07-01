@@ -1,77 +1,322 @@
-import json
-from time import sleep
+"""
+Azure message processor.
+Processes malware scan events received from Azure Service Bus.
+If a file is clean, it is copied to the destination container and
+deleted from the source container.
 
+Every major operation is traced using OpenTelemetry.
+"""
+
+import json
+import time
+from time import sleep
+from opentelemetry.trace import Status
+from opentelemetry.trace import StatusCode
 from app.config.settings import Settings
 from app.logging.otel_logger import log_scan_event
 from app.providers.azure.storage_client import get_blob_service
 
+from app.telemetry import (
+    tracer,
+    logger,
+    files_copied,
+    malicious_files,
+    processing_time,
+)
+
+def parse_message(message):
+
+    """
+    Parse Azure Service Bus message.
+    """
+
+    with tracer.start_as_current_span("parse_message") as span:
+
+        body = b"".join(
+            bytes(chunk)
+            for chunk in message.body
+        ).decode("utf-8")
+
+        payload = json.loads(body)
+
+        file_name = payload["subject"].split("/blobs/")[-1]
+
+        scan_result = payload["data"]["scanResultType"]
+
+        source_location = (
+            f"{Settings.SOURCE_CONTAINER}/{file_name}"
+        )
+
+        span.set_attribute(
+            "file.name",
+            file_name
+        )
+
+        span.set_attribute(
+            "scan.result",
+            scan_result
+        )
+
+        return (
+            file_name,
+            scan_result,
+            source_location
+        )
 
 def copy_blob(file_name):
 
-    source_client = get_blob_service(Settings.SOURCE_STORAGE_ACCOUNT)
+    """
+    Copy blob to destination storage.
+    """
 
-    print("source_client_blob: ", source_client)
+    with tracer.start_as_current_span("copy_blob") as span:
 
-    dest_client = get_blob_service(Settings.DEST_STORAGE_ACCOUNT)
+        span.set_attribute(
+            "blob.file_name",
+            file_name
+        )
 
-    print("dest_client_blob: ", dest_client)
+        source_client = get_blob_service(
+            Settings.SOURCE_STORAGE_ACCOUNT
+        )
 
-    source_blob = source_client.get_blob_client(Settings.SOURCE_CONTAINER, file_name)
+        dest_client = get_blob_service(
+            Settings.DEST_STORAGE_ACCOUNT
+        )
 
-    print("source_blob: ", source_blob)
+        source_blob = source_client.get_blob_client(
+            Settings.SOURCE_CONTAINER,
+            file_name
+        )
 
-    dest_blob = dest_client.get_blob_client(Settings.DEST_CONTAINER, file_name)
+        dest_blob = dest_client.get_blob_client(
+            Settings.DEST_CONTAINER,
+            file_name
+        )
 
-    dest_blob.start_copy_from_url(source_blob.url)
-    # copy_operation = dest_blob.start_copy_from_url(source_blob.url)
+        logger.info(
+            "Starting blob copy: %s",
+            file_name
+        )
 
-    # copy_id = copy_operation["copy_id"]
+        dest_blob.start_copy_from_url(
+            source_blob.url
+        )
 
-    while True:
+        timeout = 60
 
-        properties = dest_blob.get_blob_properties()
+        start = time.time()
 
-        status = properties.copy.status
+        while True:
 
-        if status == "success":
-            break
+            properties = dest_blob.get_blob_properties()
 
-        if status == "failed":
-            raise Exception("Blob copy failed")
+            status = properties.copy.status
 
-        sleep(1)
+            if status == "success":
 
-    if dest_blob.exists():
+                break
+
+            if status == "failed":
+
+                raise RuntimeError(
+                    "Blob copy failed."
+                )
+
+            if time.time() - start > timeout:
+
+                raise TimeoutError(
+                    "Blob copy timed out."
+                )
+
+            sleep(1)
+
+        logger.info(
+            "Blob copied successfully."
+        )
+
+        return source_blob, dest_blob
+
+def delete_source_blob(
+    source_blob,
+    dest_blob,
+    file_name
+):
+
+    """
+    Delete source blob after successful copy.
+    """
+
+    with tracer.start_as_current_span(
+        "delete_source_blob"
+    ):
+
+        if not dest_blob.exists():
+
+            raise RuntimeError(
+                "Destination blob missing."
+            )
 
         source_blob.delete_blob()
 
-    else:
+        logger.info(
+            "Deleted source blob %s",
+            file_name
+        )
 
-        raise Exception("Destination blob not found")
+def process_clean_file(
+    file_name,
+    source_location,
+    scan_result,
+):
 
-    print(f"Copied and deleted: {file_name}")
+    """
+    Process clean file.
+    """
 
+    with tracer.start_as_current_span(
+        "process_clean_file"
+    ):
+
+        source_blob, dest_blob = copy_blob(
+            file_name
+        )
+
+        delete_source_blob(
+            source_blob,
+            dest_blob,
+            file_name
+        )
+
+        files_copied.add(1)
+
+        log_scan_event(
+            file_name,
+            source_location,
+            scan_result,
+            "COPIED_AND_DELETED",
+        )
+
+        logger.info(
+            {
+              "file_name": file_name,
+              "source_location": source_location,
+              "scan_result": scan_result,
+              "status": "COPIED_AND_DELETED"
+            }
+        )
+
+        logger.info(
+            "File processed successfully."
+        )
+
+def process_malicious_file(
+    file_name,
+    source_location,
+    scan_result,
+):
+
+    """
+    Process malicious file.
+    """
+
+    with tracer.start_as_current_span(
+        "process_malicious_file"
+    ):
+
+        malicious_files.add(1)
+
+        logger.warning(
+            "Malicious file detected: %s",
+            file_name
+        )
+
+        logger.info(
+            {
+              "file_name": file_name,
+              "source_location": source_location,
+              "scan_result": scan_result,
+              "status": "MALICIOUS"
+            }
+        )
+
+        log_scan_event(
+            file_name,
+            source_location,
+            scan_result,
+            "MALICIOUS",
+        )
 
 def process_message(message):
 
-    body = b"".join(bytes(chunk) for chunk in message.body).decode("utf-8")
+    """
+    Process one Service Bus message.
+    """
 
-    payload = json.loads(body)
+    start = time.perf_counter()
 
-    print("Type of Logs after change: ", type(payload))
+    with tracer.start_as_current_span(
+        "processor.process_message"
+    ) as span:
 
-    result = payload["data"]["scanResultType"]
-    file_name = payload["subject"].split("/blobs/")[-1]
-    scan_result = result
-    source_location = f"{Settings.SOURCE_CONTAINER}/{file_name}"
+        try:
 
-    if result == "No threats found":
-        print("No threats found")
+            (
+                file_name,
+                scan_result,
+                source_location,
+            ) = parse_message(
+                message
+            )
 
-        copy_blob(file_name)
+            span.set_attribute(
+                "file.name",
+                file_name
+            )
 
-        log_scan_event(file_name, source_location, scan_result, "COPIED_AND_DELETED")
-    else:
-        print("Malicious!")
+            span.set_attribute(
+                "scan.result",
+                scan_result
+            )
 
-        log_scan_event(file_name, source_location, scan_result, "MALICIOUS")
+            if scan_result == "No threats found":
+
+                process_clean_file(
+                    file_name,
+                    source_location,
+                    scan_result,
+                )
+
+            else:
+
+                process_malicious_file(
+                    file_name,
+                    source_location,
+                    scan_result,
+                )
+
+        except Exception as ex:
+
+            span.record_exception(ex)
+
+            span.set_status(
+                Status(
+                    StatusCode.ERROR
+                )
+            )
+
+            logger.exception(
+                "Message processing failed."
+            )
+
+            raise
+
+        finally:
+
+            processing_time.record(
+                (
+                    time.perf_counter()
+                    - start
+                )
+                * 1000
+            )

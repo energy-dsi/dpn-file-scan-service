@@ -1,52 +1,158 @@
+"""
+Azure Service Bus listener.
+
+This module continuously listens for messages from the configured
+Azure Service Bus subscription, processes each message, and completes
+or abandons it based on the processing result.
+"""
+
+import logging
+import time
+
 from app.providers.azure.processor import process_message
 from app.providers.azure.servicebus_client import get_receiver
+ 
+from opentelemetry.trace.status import Status, StatusCode
+from app.telemetry import (
+    tracer,
+    logger,
+    messages_processed,
+    processing_time
+)
 
 
 def start_listener():
+    """
+    Start listening for Azure Service Bus messages.
 
+    Messages are processed one at a time. Successfully processed
+    messages are completed, while failed messages are abandoned.
+    """
+
+    logger.info(
+        "Starting Azure Service Bus listener..."
+    )
+ 
     receiver = get_receiver()
 
     with receiver:
 
         while True:
-
-            messages = receiver.receive_messages(max_message_count=10, max_wait_time=5)
-
+ 
+            with tracer.start_as_current_span(
+                "servicebus.receive_messages"
+            ) as receive_span:
+ 
+                messages = receiver.receive_messages(
+                    max_message_count=10,
+                    max_wait_time=5
+                )
+ 
+                receive_span.set_attribute(
+                    "servicebus.message_count",
+                    len(messages)
+                )
+ 
             for message in messages:
-
-                try:
-
-                    print(f"Locked Until: " f"{message.locked_until_utc}")
-
-                    print(f"Delivery Count: " f"{message.delivery_count}")
-
-                    process_message(message)
-
-                    print(f"Completing message: {message.message_id}")
-
+ 
+                start_time = time.perf_counter()
+ 
+                with tracer.start_as_current_span(
+                    "servicebus.process_message"
+                ) as span:
+ 
+                    span.set_attribute(
+                        "servicebus.message_id",
+                        str(message.message_id)
+                    )
+ 
+                    span.set_attribute(
+                        "servicebus.delivery_count",
+                        message.delivery_count
+                    )
+ 
+                    span.set_attribute(
+                        "servicebus.locked_until",
+                        str(message.locked_until_utc)
+                    )
+ 
+                    logger.info(
+                        "Processing Message ID=%s",
+                        message.message_id
+                    )
+ 
                     try:
-                        import time
-
-                        start = time.time()
-                        print("Calling complete_message...")
-
-                        receiver.complete_message(message)
-                        print(
-                            f"complete_message returned in "
-                            f"{time.time() - start:.2f} seconds"
+ 
+                        process_message(message)
+ 
+                        messages_processed.add(
+                            1
                         )
-
-                        print(f"Completed message: {message.message_id}")
-
-                    except Exception as complete_ex:
-                        print(f"Complete Failed: " f"{type(complete_ex).__name__}")
-                        print(f"ERROR: {complete_ex}")
-                        raise
-
-                except Exception as ex:
-
-                    print(f"Process Failed: {ex}")
-                    try:
-                        receiver.abandon_message(message)
-                    except Exception as abandon_ex:
-                        print(f"Abandon Failed: " f"{abandon_ex}")
+ 
+                        with tracer.start_as_current_span(
+                            "servicebus.complete_message"
+                        ):
+ 
+                            logger.info(
+                                "Completing Message=%s",
+                                message.message_id
+                            )
+ 
+                            receiver.complete_message(
+                                message
+                            )
+ 
+                        logger.info(
+                            "Completed Message=%s",
+                            message.message_id
+                        )
+ 
+                    except Exception as ex:
+ 
+                        span.record_exception(
+                            ex
+                        )
+ 
+                        span.set_status(
+                            Status(
+                                StatusCode.ERROR
+                            )
+                        )
+ 
+                        logger.exception(
+                            "Message processing failed."
+                        )
+ 
+                        try:
+ 
+                            with tracer.start_as_current_span(
+                                "servicebus.abandon_message"
+                            ):
+ 
+                                receiver.abandon_message(
+                                    message
+                                )
+ 
+                            logger.info(
+                                "Message abandoned=%s",
+                                message.message_id
+                            )
+ 
+                        except Exception as abandon_ex:
+ 
+                            span.record_exception(
+                                abandon_ex
+                            )
+ 
+                            logger.exception(
+                                "Failed to abandon message."
+                            )
+ 
+                    finally:
+ 
+                        processing_time.record(
+                            (
+                                time.perf_counter()
+                                - start_time
+                            ) * 1000
+                        )
