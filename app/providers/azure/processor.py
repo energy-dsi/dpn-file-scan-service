@@ -99,37 +99,12 @@ def copy_blob(file_name):
             file_name
         )
 
-        dest_blob.start_copy_from_url(
-            source_blob.url
+        data = source_blob.download_blob().readall()
+ 
+        dest_blob.upload_blob(
+            data,
+            overwrite=True
         )
-
-        timeout = 60
-
-        start = time.time()
-
-        while True:
-
-            properties = dest_blob.get_blob_properties()
-
-            status = properties.copy.status
-
-            if status == "success":
-
-                break
-
-            if status == "failed":
-
-                raise RuntimeError(
-                    "Blob copy failed."
-                )
-
-            if time.time() - start > timeout:
-
-                raise TimeoutError(
-                    "Blob copy timed out."
-                )
-
-            sleep(1)
 
         logger.info(
             "Blob copied successfully."
