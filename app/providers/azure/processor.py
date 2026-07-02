@@ -47,6 +47,10 @@ def parse_message(message):
             f"{Settings.SOURCE_CONTAINER}/{file_name}"
         )
 
+        destination_location = (
+            f"{Settings.DEST_CONTAINER}/{file_name}"
+        )
+
         span.set_attribute(
             "file.name",
             file_name
@@ -60,7 +64,8 @@ def parse_message(message):
         return (
             file_name,
             scan_result,
-            source_location
+            source_location,
+            destination_location
         )
 
 def copy_blob(file_name):
@@ -142,6 +147,7 @@ def delete_source_blob(
 def process_clean_file(
     file_name,
     source_location,
+    destination_location,
     scan_result,
 ):
 
@@ -152,6 +158,10 @@ def process_clean_file(
     with tracer.start_as_current_span(
         "process_clean_file"
     ):
+
+        logger.info(
+            "File Processing Started."
+        )
 
         source_blob, dest_blob = copy_blob(
             file_name
@@ -168,16 +178,18 @@ def process_clean_file(
         log_scan_event(
             file_name,
             source_location,
+            destination_location,
             scan_result,
-            "COPIED_AND_DELETED",
+            "File Processed Successfully",
         )
 
         logger.info(
             {
               "file_name": file_name,
               "source_location": source_location,
+              "destination_location": destination_location,
               "scan_result": scan_result,
-              "status": "COPIED_AND_DELETED"
+              "status": "File Processed Successfully"
             }
         )
 
@@ -211,7 +223,7 @@ def process_malicious_file(
               "file_name": file_name,
               "source_location": source_location,
               "scan_result": scan_result,
-              "status": "MALICIOUS"
+              "status": "File Rejected"
             }
         )
 
@@ -219,7 +231,7 @@ def process_malicious_file(
             file_name,
             source_location,
             scan_result,
-            "MALICIOUS",
+            "File Rejected",
         )
 
 def process_message(message):
@@ -240,6 +252,7 @@ def process_message(message):
                 file_name,
                 scan_result,
                 source_location,
+                destination_location,
             ) = parse_message(
                 message
             )
@@ -259,6 +272,7 @@ def process_message(message):
                 process_clean_file(
                     file_name,
                     source_location,
+                    destination_location,
                     scan_result,
                 )
 
