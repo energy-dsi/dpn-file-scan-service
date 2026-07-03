@@ -99,6 +99,9 @@ def copy_blob(file_name):
             file_name
         )
 
+        if not source_blob.exists():
+            return
+
         logger.info(
             "Starting blob copy: %s",
             file_name
@@ -139,10 +142,10 @@ def delete_source_blob(
 
         source_blob.delete_blob()
 
-        logger.info(
+        """ logger.info(
             "Deleted source blob %s",
             file_name
-        )
+        ) """
 
 def process_clean_file(
     file_name,
@@ -175,13 +178,13 @@ def process_clean_file(
 
         files_copied.add(1)
 
-        log_scan_event(
+        """ log_scan_event(
             file_name,
             source_location,
             destination_location,
             scan_result,
             "File Processed Successfully",
-        )
+        ) """
 
         logger.info(
             {
@@ -227,12 +230,13 @@ def process_malicious_file(
             }
         )
 
-        log_scan_event(
+        """ log_scan_event(
             file_name,
             source_location,
+            "",
             scan_result,
             "File Rejected",
-        )
+        ) """
 
 def process_message(message):
 
