@@ -76,10 +76,10 @@ def start_listener():
                         str(message.locked_until_utc)
                     )
  
-                    logger.info(
+                    """ logger.info(
                         "Processing Message ID=%s",
                         message.message_id
-                    )
+                    ) """
  
                     try:
  
