@@ -9,6 +9,7 @@ resource = Resource.create(
         "service.version": Settings.OTEL_SERVICE_VERSION,
         "deployment.environment": Settings.ENVIRONMENT,
         "telemetry.sdk.name": "opentelemetry",
-        "telemetry.sdk.language": "python"
+        "telemetry.sdk.language": "python",
+        "component.name": "file-scan-service"
     }
 )
