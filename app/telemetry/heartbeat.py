@@ -26,9 +26,14 @@ def heartbeat_worker(interval: int = 60):
                 "heartbeat.interval",
                 interval
             )
+
+            span.set_attribute(
+                "heartbeat.component",
+                "file-scan-service"
+            )
  
             logger.info(
-                "Service heartbeat"
+                "Heartbeat: Service heartbeat"
             )
  
             heartbeat_counter.add(

@@ -7,10 +7,13 @@ or abandons it based on the processing result.
 """
 
 import logging
+import json
 import time
 
 from app.providers.azure.processor import process_message
 from app.providers.azure.servicebus_client import get_receiver
+from app.providers.azure.storage_client import get_blob_service
+from app.config.settings import Settings
  
 from opentelemetry.trace.status import Status, StatusCode
 from app.telemetry import (
@@ -54,6 +57,27 @@ def start_listener():
                 )
  
             for message in messages:
+
+                body = b"".join(
+                    bytes(chunk)
+                    for chunk in message.body
+                ).decode("utf-8")
+
+                payload = json.loads(body)
+
+                file_name = payload["subject"].split("/blobs/")[-1]
+
+                source_client = get_blob_service(
+                    Settings.SOURCE_STORAGE_ACCOUNT
+                )
+
+                source_blob = source_client.get_blob_client(
+                    Settings.SOURCE_CONTAINER,
+                    file_name
+                )
+
+                if not source_blob.exists():
+                    continue
  
                 start_time = time.perf_counter()
  
@@ -74,6 +98,11 @@ def start_listener():
                     span.set_attribute(
                         "servicebus.locked_until",
                         str(message.locked_until_utc)
+                    )
+
+                    logger.info(
+                        "Service Bus Message: %s",
+                        message
                     )
  
                     """ logger.info(
