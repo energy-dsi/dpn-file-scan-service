@@ -28,7 +28,7 @@ def heartbeat_worker(interval: int = 60):
             )
 
             span.set_attribute(
-                "heartbeat.component",
+                "component.name",
                 "file-scan-service"
             )
  
