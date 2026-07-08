@@ -1,8 +1,6 @@
-from opentelemetry.sdk.resources import (
-    Resource
-)
+from opentelemetry.sdk.resources import Resource
 from app.config.settings import Settings
- 
+
 resource = Resource.create(
     {
         "service.name": Settings.OTEL_SERVICE_NAME,
@@ -10,6 +8,6 @@ resource = Resource.create(
         "deployment.environment": Settings.ENVIRONMENT,
         "telemetry.sdk.name": "opentelemetry",
         "telemetry.sdk.language": "python",
-        "component": "file-scan-service"
+        "component": "file-scan-service",
     }
 )
