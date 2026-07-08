@@ -10,6 +10,6 @@ resource = Resource.create(
         "deployment.environment": Settings.ENVIRONMENT,
         "telemetry.sdk.name": "opentelemetry",
         "telemetry.sdk.language": "python",
-        "component.name": "file-scan-service"
+        "component": "file-scan-service"
     }
 )

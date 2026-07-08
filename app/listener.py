@@ -66,6 +66,7 @@ def start_listener():
                 payload = json.loads(body)
 
                 file_name = payload["subject"].split("/blobs/")[-1]
+                scan_result = payload["data"]["scanResultType"]
 
                 source_client = get_blob_service(
                     Settings.SOURCE_STORAGE_ACCOUNT
@@ -76,7 +77,7 @@ def start_listener():
                     file_name
                 )
 
-                if not source_blob.exists():
+                if not source_blob.exists() and scan_result == "No threats found":
                     continue
  
                 start_time = time.perf_counter()
