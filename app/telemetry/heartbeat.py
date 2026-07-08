@@ -28,7 +28,7 @@ def heartbeat_worker(interval: int = 60):
             )
 
             span.set_attribute(
-                "component.name",
+                "component",
                 "file-scan-service"
             )
  
@@ -39,7 +39,9 @@ def heartbeat_worker(interval: int = 60):
             heartbeat_counter.add(
                 1,
                 {
-                    "service": "file-scan-service"
+                    "component": "file-scan-service",
+                    "component.type": "ServiceBusListener",
+                    "status": "UP"
                 }
             )
  
