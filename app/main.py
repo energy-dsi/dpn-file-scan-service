@@ -10,10 +10,10 @@ from fastapi import FastAPI
 from app.api.routes import router
 from app.config.settings import Settings
 from app.listener import start_listener
- 
+
 # Initialize OpenTelemetry
 import app.telemetry  # noqa: F401
- 
+
 from app.telemetry import logger
 from app.telemetry.configure import configure_telemetry
 from app.telemetry.heartbeat import start_heartbeat
@@ -30,30 +30,21 @@ async def lifespan(_app):
     configure_telemetry()
     start_heartbeat(interval=60)
 
-    logger.info(
-        "Starting File Scan Service. Provider=%s",
-        Settings.CLOUD_PROVIDER_TYPE
-    )
- 
+    logger.info("Starting File Scan Service. Provider=%s", Settings.CLOUD_PROVIDER_TYPE)
+
     if Settings.CLOUD_PROVIDER_TYPE == "AZURE":
 
         listener_thread = threading.Thread(
-            target=start_listener,
-            daemon=True,
-            name="servicebus-listener"
+            target=start_listener, daemon=True, name="servicebus-listener"
         )
 
         listener_thread.start()
- 
-        logger.info(
-            "Azure Service Bus listener started."
-        )
+
+        logger.info("Azure Service Bus listener started.")
 
     elif Settings.CLOUD_PROVIDER_TYPE == "S3":
- 
-        logger.info(
-            "Starting AWS processor."
-        )
+
+        logger.info("Starting AWS processor.")
 
         # pylint: disable=import-outside-toplevel,import-error,no-name-in-module
         from app.providers.aws.processor import process
@@ -61,10 +52,8 @@ async def lifespan(_app):
         process()
 
     elif Settings.CLOUD_PROVIDER_TYPE == "GCP":
- 
-        logger.info(
-            "Starting GCP processor."
-        )
+
+        logger.info("Starting GCP processor.")
 
         # pylint: disable=import-outside-toplevel,import-error,no-name-in-module
         from app.providers.gcp.processor import process
@@ -72,28 +61,18 @@ async def lifespan(_app):
         process()
 
     else:
- 
-        logger.error(
-            "Unsupported cloud provider: %s",
-            Settings.CLOUD_PROVIDER_TYPE
-        )
+
+        logger.error("Unsupported cloud provider: %s", Settings.CLOUD_PROVIDER_TYPE)
 
         raise ValueError(
-            f"Unsupported cloud provider: "
-            f"{Settings.CLOUD_PROVIDER_TYPE}"
+            f"Unsupported cloud provider: {Settings.CLOUD_PROVIDER_TYPE}"
         )
 
     yield
- 
-    logger.info(
-        "Stopping File Scan Service."
-    )
+
+    logger.info("Stopping File Scan Service.")
 
 
-app = FastAPI(
-    title="File Scan App",
-    version="1.0.0",
-    lifespan=lifespan
-)
+app = FastAPI(title="File Scan App", version="1.0.0", lifespan=lifespan)
 
 app.include_router(router)

@@ -1,5 +1,5 @@
 from opentelemetry import trace
- 
+
 """ from opentelemetry.sdk.trace import (
     TracerProvider
 )
@@ -32,7 +32,5 @@ provider.add_span_processor(
 trace.set_tracer_provider(
     provider
 ) """
- 
-tracer = trace.get_tracer(
-    "file-scan-service"
-)
+
+tracer = trace.get_tracer("file-scan-service")
