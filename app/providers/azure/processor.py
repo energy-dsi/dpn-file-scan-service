@@ -159,7 +159,7 @@ def process_malicious_file(
 
         logger.warning("Malicious file detected: %s", file_name)
 
-        logger.info(
+        logger.warning(
             {
                 "file_name": file_name,
                 "source_location": source_location,
@@ -222,7 +222,7 @@ def process_message(message):
 
             span.set_status(Status(StatusCode.ERROR))
 
-            logger.exception("Message processing failed.")
+            logger.error("Message processing failed.")
 
             raise
 

@@ -39,7 +39,7 @@ def get_blob_service(account_name):
 
             span.set_status(Status(StatusCode.ERROR))
 
-            logger.exception("BlobServiceClient creation failed.")
+            logger.error("BlobServiceClient creation failed.")
 
             raise
 
