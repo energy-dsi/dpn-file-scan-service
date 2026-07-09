@@ -1,34 +1,6 @@
 from opentelemetry import metrics
 
-""" from opentelemetry.sdk.metrics import (
-    MeterProvider
-)
- 
-from opentelemetry.sdk.metrics.export import (
-    PeriodicExportingMetricReader
-)
- 
-from opentelemetry.exporter.otlp.proto.http.metric_exporter import (
-    OTLPMetricExporter
-)
- 
-from app.telemetry.resource import resource
- 
- 
-reader = PeriodicExportingMetricReader(
-    OTLPMetricExporter(
-        endpoint="http://localhost:4317"
-    )
-)
- 
-provider = MeterProvider(
-    resource=resource,
-    metric_readers=[reader]
-)
- 
-metrics.set_meter_provider(
-    provider
-) """
+
 
 meter = metrics.get_meter("file-scan-service")
 
