@@ -26,7 +26,7 @@ class Settings:
 
     ENABLE_TELEMETRY = os.getenv("ENABLE_TELEMETRY", "true").lower() == "true"
 
-    OTEL_ENDPOINT = os.getenv("OTEL_ENDPOINT", "http://dpn-otel-collector-health:4317")
+    OTEL_ENDPOINT = os.getenv("OTEL_ENDPOINT")
 
     OTEL_EXPORTER_OTLP_PROTOCOL = os.getenv("OTEL_EXPORTER_OTLP_PROTOCOL", "grpc")
 

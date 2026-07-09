@@ -46,6 +46,8 @@ def get_client():
 
             span.set_status(Status(StatusCode.ERROR))
 
+            logger.error("Service Bus client creation failed.")
+
             raise
 
 
@@ -62,11 +64,22 @@ def get_receiver():
 
         client = get_client()
 
-        return client.get_subscription_receiver(
-            topic_name=Settings.TOPIC_NAME,
-            subscription_name=Settings.SUBSCRIPTION_NAME,
-            receive_mode=ServiceBusReceiveMode.PEEK_LOCK,
-        )
+        try:
+            return client.get_subscription_receiver(
+                topic_name=Settings.TOPIC_NAME,
+                subscription_name=Settings.SUBSCRIPTION_NAME,
+                receive_mode=ServiceBusReceiveMode.PEEK_LOCK,
+            )
+
+        except Exception as ex:
+
+            span.record_exception(ex)
+
+            span.set_status(Status(StatusCode.ERROR))
+
+            logger.error("Service Bus receiver creation failed.")
+
+            raise
 
 
 def send_message(payload):
