@@ -9,7 +9,7 @@ from fastapi import FastAPI
 
 from app.api.routes import router
 from app.config.settings import Settings
-from app.listener import start_listener
+from app.providers.azure.listener import start_azure_listener
 
 # Initialize OpenTelemetry
 import app.telemetry  # noqa: F401
@@ -35,7 +35,7 @@ async def lifespan(_app):
     if Settings.CLOUD_PROVIDER_TYPE == "AZURE":
 
         listener_thread = threading.Thread(
-            target=start_listener, daemon=True, name="servicebus-listener"
+            target=start_azure_listener, daemon=True, name="servicebus-listener"
         )
 
         listener_thread.start()
