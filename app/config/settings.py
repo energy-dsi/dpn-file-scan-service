@@ -62,3 +62,58 @@ class Settings:
     DEST_STORAGE_ACCOUNT = os.getenv("DEST_STORAGE_ACCOUNT")
 
     DEST_CONTAINER = os.getenv("DEST_CONTAINER")
+    
+    AWS_REGION = os.getenv(
+        "AWS_REGION",
+        "us-east-1",
+    )
+
+    AWS_ACCESS_KEY_ID = os.getenv(
+        "AWS_ACCESS_KEY_ID",
+        "minioadmin",
+    )
+
+    AWS_SECRET_ACCESS_KEY = os.getenv(
+        "AWS_SECRET_ACCESS_KEY",
+        "minioadmin",
+    )
+
+    S3_ENDPOINT = os.getenv(
+        "S3_ENDPOINT",
+        "",
+    )
+    
+    S3_BUCKET_INBOUND = os.getenv(
+        "S3_BUCKET_INBOUND",
+        "",
+    )
+    
+    S3_BUCKET_OUTBOUND = os.getenv(
+        "S3_BUCKET_OUTBOUND",
+        "",
+    )
+    
+    S3_BUCKET_QUARANTINE = os.getenv(
+        "S3_BUCKET_QUARANTINE",
+        "",
+    )
+
+    SQS_ENDPOINT = os.getenv(
+        "SQS_ENDPOINT",
+        "",
+    )
+
+    SNS_ENDPOINT = os.getenv(
+        "SNS_ENDPOINT",
+        "",
+    )
+
+    SNS_TOPIC = os.getenv(
+        "SNS_TOPIC",
+        "",
+    )
+
+    SQS_QUEUE = os.getenv(
+        "SQS_QUEUE",
+        "",
+    )
