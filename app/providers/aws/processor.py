@@ -5,14 +5,6 @@ from opentelemetry.trace import Status
 from opentelemetry.trace import StatusCode
 from app.config.settings import Settings
 
-""" from app.telemetry.metrics import (
-    messages_counter,
-    files_counter,
-    malware_counter,
-    processing_time,
-)
-
-from app.telemetry.tracing import tracer """
 from app.telemetry import (
     tracer,
     logger,
@@ -40,7 +32,7 @@ SCAN_RESULT_THREATS_FOUND = "THREATS_FOUND"
 
 def parse_message(message):
     """
-    Parse Azure Service Bus message.
+    Parse AWS SQS message.
     """
 
     with tracer.start_as_current_span("parse_message") as span:

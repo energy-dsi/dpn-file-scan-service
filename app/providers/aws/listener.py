@@ -86,8 +86,11 @@ def start_aws_listener():
                         )
 
             except Exception as ex:
+<<<<<<< HEAD
                 receive_span.record_exception(ex)        
                 receive_span.set_status(Status(StatusCode.ERROR))
+=======
+>>>>>>> 35a8791 (listener change)
                 logger.exception(
                     "SQS listener loop failed, retrying."
                 )
