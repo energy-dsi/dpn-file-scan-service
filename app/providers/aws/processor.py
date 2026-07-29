@@ -39,19 +39,16 @@ def parse_message(message):
 
         body = b"".join(bytes(chunk) for chunk in message.body).decode("utf-8")
 
-        #
-        # SNS -> SQS
-        #
-        if "Message" in body:
-            payload = json.loads(body["Message"])
+        envelope = json.loads(body)
 
         #
-        # Direct SQS
+        # SNS -> SQS wraps the event JSON in a "Message" field;
+        # a direct SQS delivery is already the event itself.
         #
+        if isinstance(envelope, dict) and "Message" in envelope:
+            payload = json.loads(envelope["Message"])
         else:
-            payload = body
-
-        print("PAYLOAD =", payload)
+            payload = envelope
 
         detail = payload["detail"]
 
@@ -71,8 +68,8 @@ def parse_message(message):
             f"{Settings.S3_BUCKET_OUTBOUND}/{file_name}"
         )
         
-        span.setAttspan.set_attribute("file.name", file_name)
-        
+        span.set_attribute("file.name", file_name)
+
         span.set_attribute("scan.result", scan_result)
 
         return (
