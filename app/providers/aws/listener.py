@@ -66,8 +66,8 @@ def start_aws_listener():
                                 logger.exception("Message processing failed.")
 
                     except Exception as ex:
-                        span.record_exception(ex)        
-                        span.set_status(Status(StatusCode.ERROR))
+                        receive_span.record_exception(ex)        
+                        receive_span.set_status(Status(StatusCode.ERROR))
                         logger.exception(
                             "Skipping message after processing failure."
                         )
@@ -79,15 +79,15 @@ def start_aws_listener():
                         )
 
                     except Exception as ex:
-                        span.record_exception(ex)        
-                        span.set_status(Status(StatusCode.ERROR))
+                        receive_span.record_exception(ex)        
+                        receive_span.set_status(Status(StatusCode.ERROR))
                         logger.exception(
                             "Failed to delete message from queue."
                         )
 
             except Exception as ex:
-                span.record_exception(ex)        
-                span.set_status(Status(StatusCode.ERROR))
+                receive_span.record_exception(ex)        
+                receive_span.set_status(Status(StatusCode.ERROR))
                 logger.exception(
                     "SQS listener loop failed, retrying."
                 )
