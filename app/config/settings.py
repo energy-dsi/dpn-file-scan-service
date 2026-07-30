@@ -65,7 +65,7 @@ class Settings:
     
     AWS_REGION = os.getenv(
         "AWS_REGION",
-        "us-east-1",
+        "eu-west-2",
     )
 
     AWS_ACCESS_KEY_ID = os.getenv(
@@ -82,7 +82,11 @@ class Settings:
         "S3_ENDPOINT",
         "",
     )
-    
+
+    # TLS verification for S3. Keep enabled against real AWS; set to
+    # "false" only for local MinIO with a self-signed certificate.
+    S3_VERIFY_SSL = os.getenv("S3_VERIFY_SSL", "true").lower() == "true"
+
     S3_BUCKET_INBOUND = os.getenv(
         "S3_BUCKET_INBOUND",
         "",

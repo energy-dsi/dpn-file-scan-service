@@ -56,6 +56,7 @@ def get_s3_client():
         "aws_access_key_id": AWS_ACCESS_KEY,
         "aws_secret_access_key": AWS_SECRET_KEY,
         "config": AWS_CONFIG,
+        "verify": Settings.S3_VERIFY_SSL,
     }
 
     #
@@ -65,8 +66,6 @@ def get_s3_client():
     if Settings.S3_ENDPOINT:
 
         kwargs["endpoint_url"] = Settings.S3_ENDPOINT
-
-        kwargs["verify"] = False
 
     return boto3.client(**kwargs)
 
@@ -81,13 +80,12 @@ def get_s3_resource():
         "aws_access_key_id": AWS_ACCESS_KEY,
         "aws_secret_access_key": AWS_SECRET_KEY,
         "config": AWS_CONFIG,
+        "verify": Settings.S3_VERIFY_SSL,
     }
 
     if Settings.S3_ENDPOINT:
 
         kwargs["endpoint_url"] = Settings.S3_ENDPOINT
-
-        kwargs["verify"] = False
 
     return boto3.resource(**kwargs)
 

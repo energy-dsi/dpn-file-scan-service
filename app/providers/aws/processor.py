@@ -139,11 +139,12 @@ def process_malicious_file(
             file_name,
         )
 
-        quarantine(file_name, source_bucket=bucket_name)
+        #quarantine(file_name, source_bucket=bucket_name)
+        delete_source(file_name, source_bucket=bucket_name)
 
         logger.warning(
 
-            "File moved to quarantine",
+            "Malicious File Deleted",
 
             extra={
                 "file_name": file_name,
@@ -207,10 +208,10 @@ def process_message(message):
         except Exception as ex:
 
             span.record_exception(ex)
-            
+
             span.set_status(Status(StatusCode.ERROR))
 
-            logger.error("Message processing failed.")
+            logger.exception("Message processing failed.")
 
             raise
 
