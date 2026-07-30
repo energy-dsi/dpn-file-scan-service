@@ -37,7 +37,9 @@ def parse_message(message):
 
     with tracer.start_as_current_span("parse_message") as span:
 
-        body = b"".join(bytes(chunk) for chunk in message.body).decode("utf-8")
+        # boto3 delivers the SQS message as a dict whose "Body" is a
+        # UTF-8 string (unlike Azure Service Bus, which yields byte chunks).
+        body = message["Body"]
 
         envelope = json.loads(body)
 
