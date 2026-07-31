@@ -69,8 +69,6 @@ class Settings:
 
     AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")
 
-    AWS_SESSION_TOKEN = os.getenv("AWS_SESSION_TOKEN")
-
     # Only set this for a local MinIO endpoint. Leave unset against real
     # AWS so boto3 resolves the correct regional endpoint from AWS_REGION.
     S3_ENDPOINT = os.getenv("S3_ENDPOINT")
