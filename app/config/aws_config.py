@@ -36,10 +36,32 @@ AWS_CONFIG = Config(
 #
 # Credentials
 #
+# Explicit keys are only passed to boto3 when set. Otherwise boto3 falls
+# back to its default credential chain (env vars, shared config, instance
+# or task role), which avoids hardcoding/expiring credentials in settings.
+#
 
-AWS_ACCESS_KEY = Settings.AWS_ACCESS_KEY_ID
+def _credential_kwargs():
+    """
+    Return boto3 credential kwargs, omitting unset values so the default
+    credential chain is used instead.
+    """
 
-AWS_SECRET_KEY = Settings.AWS_SECRET_ACCESS_KEY
+    kwargs = {}
+
+    if Settings.AWS_ACCESS_KEY_ID:
+
+        kwargs["aws_access_key_id"] = Settings.AWS_ACCESS_KEY_ID
+
+    if Settings.AWS_SECRET_ACCESS_KEY:
+
+        kwargs["aws_secret_access_key"] = Settings.AWS_SECRET_ACCESS_KEY
+
+    if Settings.AWS_SESSION_TOKEN:
+
+        kwargs["aws_session_token"] = Settings.AWS_SESSION_TOKEN
+
+    return kwargs
 
 
 #
@@ -53,8 +75,7 @@ def get_s3_client():
 
     kwargs = {
         "service_name": "s3",
-        "aws_access_key_id": AWS_ACCESS_KEY,
-        "aws_secret_access_key": AWS_SECRET_KEY,
+        **_credential_kwargs(),
         "config": AWS_CONFIG,
         "verify": Settings.S3_VERIFY_SSL,
     }
@@ -77,8 +98,7 @@ def get_s3_resource():
 
     kwargs = {
         "service_name": "s3",
-        "aws_access_key_id": AWS_ACCESS_KEY,
-        "aws_secret_access_key": AWS_SECRET_KEY,
+        **_credential_kwargs(),
         "config": AWS_CONFIG,
         "verify": Settings.S3_VERIFY_SSL,
     }
@@ -101,8 +121,7 @@ def get_sqs_client():
 
     kwargs = {
         "service_name": "sqs",
-        "aws_access_key_id": AWS_ACCESS_KEY,
-        "aws_secret_access_key": AWS_SECRET_KEY,
+        **_credential_kwargs(),
         "config": AWS_CONFIG,
     }
 
@@ -124,8 +143,7 @@ def get_sns_client():
 
     kwargs = {
         "service_name": "sns",
-        "aws_access_key_id": AWS_ACCESS_KEY,
-        "aws_secret_access_key": AWS_SECRET_KEY,
+        **_credential_kwargs(),
         "config": AWS_CONFIG,
     }
 

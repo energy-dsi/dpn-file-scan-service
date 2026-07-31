@@ -140,7 +140,7 @@ def process_malicious_file(
         )
 
         #quarantine(file_name, source_bucket=bucket_name)
-        delete_source(file_name, source_bucket=bucket_name)
+        delete_source(file_name, bucket=bucket_name)
 
         logger.warning(
 
