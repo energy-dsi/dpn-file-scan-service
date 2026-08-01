@@ -10,6 +10,7 @@ from fastapi import FastAPI
 from app.api.routes import router
 from app.config.settings import Settings
 from app.providers.azure.listener import start_azure_listener
+from app.providers.aws.listener import start_aws_listener
 
 
 # Initialize OpenTelemetry
@@ -47,7 +48,6 @@ async def lifespan(_app):
 
         logger.info("Starting AWS processor.")
 
-        from app.providers.aws.listener import start_aws_listener
         # pylint: disable=import-outside-toplevel,import-error,no-name-in-module
         listener_thread = threading.Thread(
             target=start_aws_listener, daemon=True, name="sqs-listener"
