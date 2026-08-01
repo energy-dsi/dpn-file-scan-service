@@ -63,7 +63,7 @@ class Settings:
 
     DEST_CONTAINER = os.getenv("DEST_CONTAINER")
     
-    AWS_REGION = os.getenv("AWS_REGION")
+    AWS_REGION = os.getenv("AWS_REGION", "eu-west-2")
 
     AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID")
 
