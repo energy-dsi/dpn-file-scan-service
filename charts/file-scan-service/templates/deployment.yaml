@@ -1,0 +1,83 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Values.app.name }}
+  namespace: {{ .Values.namespace }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      app: {{ .Values.app.name }}
+  template:
+    metadata:
+      labels:
+        app: {{ .Values.app.name }}
+    spec:
+      containers:
+        - name: {{ .Values.app.name }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          ports:
+            - containerPort: {{ .Values.service.targetPort }}
+              name: {{ .Values.service.portName }}
+          # envFrom:
+          #   - secretRef:
+          #       name: "{{ .Values.app.name }}-secrets"
+          env:
+            - name: ENVIRONMENT
+              value: {{ .Values.env.environment | quote }}
+            - name: LOG_LEVEL
+              value: {{ .Values.env.logLevel | quote }}
+            - name: ENABLE_TELEMETRY
+              value: {{ .Values.env.enableTelemetry | quote }}
+            - name: TESTING
+              value: {{ .Values.env.testing | quote }}
+            - name: OTEL_ENDPOINT
+              value: {{ .Values.env.otelEndpoint | quote }}
+            - name: OTEL_EXPORTER_OTLP_PROTOCOL
+              value: {{ .Values.env.otelExporterProtocol | quote }}
+            - name: OTEL_EXPORTER_OTLP_INSECURE
+              value: {{ .Values.env.otelExporterInsecure | quote }}
+            - name: SERVICE_NAME
+              value: {{ .Values.env.serviceName | quote }}
+            - name: SERVICE_VERSION
+              value: {{ .Values.env.serviceVersion | quote }}
+            - name: SERVICE_BUS_NAMESPACE
+              value: {{ .Values.env.serviceBusNamespace | quote }}
+            - name: SOURCE_STORAGE_ACCOUNT
+              value: {{ .Values.env.sourceStorageAccount | quote }}
+            - name: SOURCE_CONTAINER
+              value: {{ .Values.env.sourceContainer | quote }}
+            - name: DEST_STORAGE_ACCOUNT
+              value: {{ .Values.env.destStorageAccount | quote }}
+            - name: DEST_CONTAINER
+              value: {{ .Values.env.destContainer | quote }}
+            - name: CLOUD_PROVIDER_TYPE
+              value: {{ .Values.env.cloudprovidertype | quote }}
+            - name: TENANT_ID
+              value: {{ .Values.env.tenantId | quote }}
+            - name: TOPIC_NAME
+              value: {{ .Values.env.topicname | quote }}
+            - name: SUBSCRIPTION_NAME
+              value: {{ .Values.env.subscriptionname | quote }}
+            - name: CLIENT_ID_FILE
+              value: {{ .Values.env.clientIdFile | quote }}
+            - name: CLIENT_SECRET_FILE
+              value: {{ .Values.env.clientSecretFile | quote }}
+
+          volumeMounts:
+            - name: keyvault-secrets
+              mountPath: "/mnt/keyvault"
+              readOnly: true
+
+      volumes:
+        - name: keyvault-secrets
+          csi:
+            driver: secrets-store.csi.k8s.io
+            readOnly: true
+            volumeAttributes:
+              secretProviderClass: "{{ .Values.app.name }}-kv-secrets"

@@ -1,0 +1,37 @@
+--find-links packages
+azure-identity==1.23.0
+azure-servicebus==7.14.2
+azure-storage-blob==12.27.0
+websocket-client>=1.8.0
+
+opentelemetry-api==1.42.1
+opentelemetry-sdk==1.42.1
+opentelemetry-exporter-otlp==1.42.1
+
+python-dotenv>=1.2.2
+
+boto3==1.40.0
+
+# NOTE: google-cloud-storage is intentionally NOT installed here. Its transitive
+# dependency google-crc32c publishes no musllinux (Alpine) wheel for Python 3.14,
+# which would force a source build and break the wheel-only image. The service is
+# deployed against Azure; the GCP provider is imported lazily and is unused. To
+# re-enable GCP, add google-cloud-storage back on a glibc base (has cp314 wheels)
+# or once google-crc32c ships musllinux cp314 wheels.
+
+pytest>=9.0.2
+pytest-cov==6.2.1
+pytest-mock==3.14.1
+httpx==0.28.1
+coverage==7.10.6
+pytest-asyncio==1.4.0
+
+fastapi>=0.116.1
+# Plain uvicorn (no [standard]) intentionally: the [standard] extra pulls uvloop,
+# which is not yet compatible with Python 3.14 (asyncio import error). We run on the
+# stdlib asyncio loop instead (see CMD --loop asyncio). Also drops httptools/websockets,
+# which this REST-only service does not use, reducing the C-extension attack surface.
+uvicorn==0.35.0
+# >=2.12 is the first pydantic line with Python 3.14 support; its pinned
+# pydantic-core ships cp314 musllinux wheels so it installs without compiling.
+pydantic>=2.12

@@ -1,0 +1,45 @@
+namespace: ns-dpn-01
+
+image:
+  repository: "<<your specific value>>"
+  tag: ""
+  pullPolicy: Always
+
+replicaCount: 1
+
+keyvault:
+  name: <<your specific value>>
+  clientID: <<your specific value>>
+  tenantId: "<<your specific value>>"
+
+  objects:
+    - name: FILESCAN-CLIENT-ID
+      type: secret
+
+    - name: FILESCAN-CLIENT-SECRET
+      type: secret
+
+env:
+  environment: "development"
+  logLevel: "info"
+
+  enableTelemetry: "true"
+  testing: "false"
+  otelEndpoint: "http://dpn-otel-collector.ns-dpn-health-01.svc.cluster.local:4317"
+  otelExporterProtocol: "grpc"
+  otelExporterInsecure: "true"
+  serviceName: "dpn-file-scan-service"
+  serviceVersion: "1.0.0"
+
+  serviceBusNamespace: "<<your specific value>>"
+  sourceStorageAccount: "<<your specific value>>"
+  sourceContainer: "dp-consumer-raw"
+  destStorageAccount: "<<your specific value>>"
+  destContainer: "dp-consumer-stage"
+
+  cloudprovidertype: "AZURE"
+  tenantId: "<<your specific value>>"
+  topicname: "dpn-fileupload-scan-results"
+  subscriptionname: "dpn-fileupload-scan-results-sub"
+  clientIdFile: "/mnt/keyvault/FILESCAN-CLIENT-ID"
+  clientSecretFile: "/mnt/keyvault/FILESCAN-CLIENT-SECRET"

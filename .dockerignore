@@ -1,0 +1,40 @@
+# Version control / CI
+.git
+.gitignore
+.pipelines
+charts
+
+# Local env & secrets — must never enter the image
+.env
+.env.*
+local-secrets
+*.key
+*.pem
+
+# Python caches / build artifacts
+__pycache__
+*.py[cod]
+*.egg-info
+.pytest_cache
+.coverage
+coverage
+htmlcov
+coverage.xml
+build
+dist
+
+# Virtual envs (rebuilt inside the image)
+.venv
+venv
+ENV
+env
+
+# Editor / OS cruft
+.vscode
+.idea
+.DS_Store
+
+# Docs & compose (not needed at runtime)
+docker-compose.yml
+README.md
+CHANGELOG.md

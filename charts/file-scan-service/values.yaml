@@ -1,0 +1,90 @@
+namespace: ns-dpn-01
+
+app:
+  name: dpn-file-scan-service
+
+image:
+  repository: ""
+  tag: ""
+  pullPolicy: Always
+
+replicaCount: 1
+
+resources:
+  requests:
+    memory: "256Mi"
+    cpu: "100m"
+  limits:
+    memory: "512Mi"
+    cpu: "200m"
+
+keyvault:
+  name: ""
+  clientID: ""
+  tenantId: "<<your specific value>>"
+
+  objects:
+    - name: FILESCAN-CLIENT-ID
+      type: secret
+
+    - name: FILESCAN-CLIENT-SECRET
+      type: secret
+
+
+
+service:
+  type: ClusterIP
+  portName: filescan  # Port name should be within 15
+  port: 8080
+  targetPort: 8080    # Container port
+
+
+hpa:
+  enabled: true
+
+  components:
+    file-scan-service:
+      min: 1                          
+      max: 3
+
+  scaleUp:
+    cpuUtilization: 80     
+    memoryUtilization: 80
+
+  scaleUpBehavior:
+    stabilizationWindowSeconds: 60
+    policies:
+      - type: Pods
+        value: 1                      # faster scale up
+        periodSeconds: 60
+
+  scaleDown:
+    stabilizationWindowSeconds: 300   ## Scale Down Period  
+    policies:
+      - type: Percent
+        value: 50                     # scale down up to 50% at once
+        periodSeconds: 60
+env:
+  environment: "development"
+  logLevel: "info"
+
+  enableTelemetry: "true"
+  testing: "false"
+  otelEndpoint: ""
+  otelExporterProtocol: "grpc"
+  otelExporterInsecure: "true"
+  serviceName: "file-scan-service"
+  serviceVersion: "1.0.0"
+
+  serviceBusNamespace: ""
+  sourceStorageAccount: ""
+  sourceContainer: ""
+  destStorageAccount: ""
+  destContainer: ""
+
+  cloudprovidertype: "AZURE"
+  tenantId: "<<your specific value>>"
+  topicname: "dpn-fileupload-scan-results"
+  subscriptionname: "dpn-fileupload-scan-results-sub"
+  clientIdFile: "/mnt/keyvault/FILESCAN-CLIENT-ID"
+  clientSecretFile: "/mnt/keyvault/FILESCAN-CLIENT-SECRET"
