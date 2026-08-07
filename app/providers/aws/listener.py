@@ -21,7 +21,7 @@ from app.providers.aws.processor import (
 
 from app.telemetry import tracer, logger, messages_processed, processing_time
 
-POLL_INTERVAL_SECONDS = 2
+POLL_INTERVAL_SECONDS = 10
 
 
 def _handle_message(message, receive_span):
