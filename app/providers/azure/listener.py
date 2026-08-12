@@ -19,7 +19,7 @@ from opentelemetry.trace.status import Status, StatusCode
 from app.telemetry import tracer, logger, messages_processed, processing_time
 
 
-def start_listener():
+def start_azure_listener():
     """
     Start listening for Azure Service Bus messages.
 

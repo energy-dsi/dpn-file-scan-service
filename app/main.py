@@ -9,7 +9,9 @@ from fastapi import FastAPI
 
 from app.api.routes import router
 from app.config.settings import Settings
-from app.listener import start_listener
+from app.providers.azure.listener import start_azure_listener
+from app.providers.aws.listener import start_aws_listener
+
 
 # Initialize OpenTelemetry
 import app.telemetry  # noqa: F401
@@ -35,7 +37,7 @@ async def lifespan(_app):
     if Settings.CLOUD_PROVIDER_TYPE == "AZURE":
 
         listener_thread = threading.Thread(
-            target=start_listener, daemon=True, name="servicebus-listener"
+            target=start_azure_listener, daemon=True, name="servicebus-listener"
         )
 
         listener_thread.start()
@@ -47,9 +49,12 @@ async def lifespan(_app):
         logger.info("Starting AWS processor.")
 
         # pylint: disable=import-outside-toplevel,import-error,no-name-in-module
-        from app.providers.aws.processor import process
+        listener_thread = threading.Thread(
+            target=start_aws_listener, daemon=True, name="sqs-listener"
+        )
 
-        process()
+        listener_thread.start()
+        logger.info("AWS SQS listener started.")
 
     elif Settings.CLOUD_PROVIDER_TYPE == "GCP":
 

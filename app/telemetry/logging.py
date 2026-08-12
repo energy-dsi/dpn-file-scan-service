@@ -39,6 +39,13 @@ class OTELJsonFormatter(logging.Formatter):
         }
 
         #
+        # Surface exception details (logger.exception / exc_info=True).
+        # Without this the traceback is dropped and only the message shows.
+        #
+        if record.exc_info:
+            log_entry["exception"] = self.formatException(record.exc_info)
+
+        #
         # Include custom attributes passed through logger.info(..., extra={})
         #
 
