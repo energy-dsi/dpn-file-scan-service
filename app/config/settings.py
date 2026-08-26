@@ -28,9 +28,20 @@ class Settings:
 
     OTEL_ENDPOINT = os.getenv("OTEL_ENDPOINT")
 
-    OTEL_EXPORTER_OTLP_PROTOCOL = os.getenv("OTEL_EXPORTER_OTLP_PROTOCOL", "grpc")
+    # Standard OTLP endpoint (base URL, e.g. https://<collector>:4318).
+    # Falls back to the legacy OTEL_ENDPOINT for backward compatibility.
+    OTEL_EXPORTER_OTLP_ENDPOINT = (
+        os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT") or os.getenv("OTEL_ENDPOINT")
+    )
 
-    OTEL_EXPORTER_OTLP_INSECURE = os.getenv("OTEL_EXPORTER_OTLP_INSECURE", "true")
+    OTEL_EXPORTER_OTLP_PROTOCOL = os.getenv("OTEL_EXPORTER_OTLP_PROTOCOL", "http/protobuf")
+
+    # Path to the CA certificate (PEM) used to verify the collector's TLS
+    # certificate. Required for HTTPS; if unset, the default certifi bundle is
+    # used (which will NOT trust a private root CA).
+    OTEL_EXPORTER_OTLP_CERTIFICATE = os.getenv("OTEL_EXPORTER_OTLP_CERTIFICATE")
+
+    TRUSTSTORE_PASSWORD = os.getenv("TRUSTSTORE_PASSWORD")
 
     OTEL_SERVICE_NAME = os.getenv("SERVICE_NAME", "file-scan-service")
 
