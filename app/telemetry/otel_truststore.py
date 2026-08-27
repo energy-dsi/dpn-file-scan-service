@@ -77,17 +77,21 @@ from app.config.settings import Settings
 _LOG = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Hardcoded truststore location.
+# Truststore location.
 #
 # A single literal path cannot cover both cases: inside a container the PKI is
 # bind-mounted at /certs (every service in docker-compose.observability-full.yml
 # mounts ../../certs/dpn-observability there), while a developer running a
 # producer directly on Windows has it under the checkout's sibling certs dir.
-# So this is an ordered list of hardcoded candidates and the first one that
-# exists wins - still no environment variable to set, in either place.
+# So this is an ordered list of candidates and the first one that exists wins.
 #
-# ADD A PATH HERE rather than reaching for an env var if a new deployment shape
-# puts the store somewhere else.
+# TRUSTSTORE_PATH (env, via Settings) REPLACES the hardcoded defaults below
+# when set, so a deployment shape that puts the store somewhere else (a
+# different mount point, a Kubernetes projected volume, etc.) can be pointed
+# at it without a code change, with no hardcoded fallback still being tried.
+# It accepts one or more paths separated by os.pathsep, tried in order.
+# Existing deployments that set nothing keep using the hardcoded defaults
+# unchanged.
 # ---------------------------------------------------------------------------
 # Repo root: this file is <repo>/app/telemetry/otel_truststore.py, so three
 # dirname() hops from its absolute path land on <repo> (file-scan-app).
@@ -95,7 +99,7 @@ _REPO_ROOT = os.path.dirname(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 )
 
-TRUSTSTORE_PATHS = (
+_DEFAULT_TRUSTSTORE_PATHS = (
     # Container: docker-compose.yml bind-mounts ./.certs -> /certs:ro, so a
     # truststore dropped into the repo's .certs/ dir appears here. The only
     # entry that matters in a deployed producer.
@@ -104,6 +108,18 @@ TRUSTSTORE_PATHS = (
     # that already holds rootCA.crt for the plain PEM path).
     os.path.join(_REPO_ROOT, ".certs", "dpn-observability-truststore.p12"),
 )
+
+
+def _build_truststore_paths() -> tuple[str, ...]:
+    """Env override(s) if set, replacing the hardcoded defaults entirely."""
+    override = (Settings.TRUSTSTORE_PATH or "").strip()
+    if not override:
+        return _DEFAULT_TRUSTSTORE_PATHS
+
+    return tuple(p.strip() for p in override.split(os.pathsep) if p.strip())
+
+
+TRUSTSTORE_PATHS = _build_truststore_paths()
 
 # Matches P12_PASS in config/certs/generate-certs.sh, which is what the stores
 # are actually built with. Changing it here alone achieves nothing - the .p12 is
