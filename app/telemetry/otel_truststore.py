@@ -12,19 +12,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """
-otlp_truststore - take OTLP CA trust from the password-protected PKCS12
-truststore, the same file the JVM services consume.
+otlp_truststore - take OTLP CA trust from the password-protected PKCS12 or
+JKS truststore, the same file the JVM services consume.
 
 Why this exists
 ---------------
-The DPN PKI ships one trust anchor in two formats:
-
-    dpn-observability-truststore.p12   PKCS12 + password   (Keycloak, Kafka UI)
-    rootCA.crt                         PEM                 (Go and Python)
-
-Both hold the identical NESO-DSI-Root-CA certificate. This module makes the
-``.p12`` the single distributed artefact for Python producers too: one file to
-ship, one password to rotate, and the tamper-evidence a PKCS12 MAC provides.
+The DPN PKI ships trust anchors in Java container formats for JVM services
+(Keycloak, Kafka UI: PKCS12 keystore/truststore, or plain JKS), alongside a
+PEM (rootCA.crt / ca.crt) for Go and Python. This module makes the Java
+container format directly usable by Python producers too: one file to ship,
+one password to rotate, and the tamper-evidence its MAC/hash provides.
 
 What it actually does
 ---------------------
@@ -32,11 +29,16 @@ Python has no truststore support at any layer - not ``ssl``, not ``requests``,
 not the OTLP exporters - because PKCS12 and JKS are Java container formats.
 There is no ``trustStorePassword`` equivalent to set. So this module:
 
-    1. opens the .p12 with the password (``cryptography`` parses PKCS12, which
-       the standard library cannot),
+    1. opens the truststore with the password - ``cryptography`` parses
+       PKCS12 (.p12/.pfx), ``pyjks`` parses JKS (.jks); the standard library
+       can parse neither,
     2. writes the CA certificates inside it to a private temporary PEM file,
     3. points ``OTEL_EXPORTER_OTLP_CERTIFICATE`` at that file,
     4. removes it when the process ends.
+
+The format is selected by the truststore file's extension: ``.p12``/``.pfx``
+loads as PKCS12, ``.jks`` loads as JKS. Both are read-only trust operations -
+only the trustedCertEntry certificates are extracted, never a private key.
 
 BE CLEAR ABOUT WHAT THIS DOES AND DOES NOT GIVE YOU. The password is genuinely
 required and genuinely verified: a wrong password, or a truststore altered by so
@@ -160,7 +162,26 @@ def _find_truststore() -> Optional[str]:
 
 
 def _load_ca_pem(path: str, password: Optional[str]) -> bytes:
-    """Return every certificate in *path* concatenated as PEM."""
+    """Return every certificate in *path* concatenated as PEM.
+
+    Dispatches on file extension: .p12/.pfx -> PKCS12, .jks -> JKS.
+    """
+    ext = os.path.splitext(path)[1].lower()
+
+    if ext in (".p12", ".pfx"):
+        return _load_pkcs12_pem(path, password)
+
+    if ext == ".jks":
+        return _load_jks_pem(path, password)
+
+    raise TruststoreError(
+        f"truststore {path} has an unrecognised extension {ext!r}; "
+        "expected .p12, .pfx, or .jks"
+    )
+
+
+def _load_pkcs12_pem(path: str, password: Optional[str]) -> bytes:
+    """Return every certificate in a PKCS12 (.p12/.pfx) file as PEM."""
     try:
         from cryptography.hazmat.primitives.serialization import Encoding, pkcs12
     except ImportError as exc:  # pragma: no cover - depends on the environment
@@ -199,6 +220,64 @@ def _load_ca_pem(path: str, password: Optional[str]) -> bytes:
     certs = [entry.certificate for entry in bundle.additional_certs]
     if bundle.cert is not None:
         certs.append(bundle.cert.certificate)
+
+    if not certs:
+        raise TruststoreError(
+            f"truststore {path} opened successfully but contains no certificates"
+        )
+
+    _LOG.debug("loaded %d certificate(s) from %s", len(certs), path)
+    return b"".join(cert.public_bytes(Encoding.PEM) for cert in certs)
+
+
+def _load_jks_pem(path: str, password: Optional[str]) -> bytes:
+    """Return every certificate in a JKS (.jks) file as PEM.
+
+    Uses the ``pyjks`` package (import name ``jks``), the only Python library
+    that understands the Java KeyStore binary format - the standard library
+    and ``cryptography`` do not. Only trustedCertEntry items are read; no
+    private key material is ever decrypted (this is a truststore, not a
+    keystore), so pyjks's optional Twofish-dependent BKS/UBER key-decryption
+    code path is never exercised and that dependency is intentionally not
+    installed - see requirements.txt.
+    """
+    try:
+        import jks
+    except ImportError as exc:  # pragma: no cover - depends on the environment
+        raise TruststoreError(
+            f"found truststore {path} but the 'pyjks' package is not "
+            "installed; it is required to read JKS from Python"
+        ) from exc
+
+    try:
+        from cryptography import x509
+        from cryptography.hazmat.primitives.serialization import Encoding
+    except ImportError as exc:  # pragma: no cover - depends on the environment
+        raise TruststoreError(
+            f"found truststore {path} but the 'cryptography' package is not "
+            "installed; it is required to convert JKS certificates to PEM"
+        ) from exc
+
+    # jks.KeyStore.load() wants a real password string, unlike PKCS12's
+    # load_pkcs12() which accepts None for "no password". JKS always has one.
+    try:
+        keystore = jks.KeyStore.load(path, password or "")
+    except jks.util.KeystoreSignatureException as exc:
+        raise TruststoreError(
+            f"could not open truststore {path}: {exc}. Either TRUSTSTORE_PASSWORD "
+            "no longer matches the password this JKS file was created with, or "
+            "the file has been altered since it was created (JKS covers the "
+            "whole store with an integrity hash)."
+        ) from exc
+    except jks.util.KeystoreException as exc:
+        raise TruststoreError(f"could not open truststore {path}: {exc}") from exc
+
+    # A truststore holds trustedCertEntry items in keystore.certs. Private-key
+    # entries (keystore.private_keys) are deliberately never touched here.
+    certs = [
+        x509.load_der_x509_certificate(entry.cert)
+        for entry in keystore.certs.values()
+    ]
 
     if not certs:
         raise TruststoreError(
