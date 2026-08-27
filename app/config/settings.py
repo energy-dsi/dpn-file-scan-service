@@ -43,6 +43,13 @@ class Settings:
 
     TRUSTSTORE_PASSWORD = os.getenv("TRUSTSTORE_PASSWORD")
 
+    # Optional override for the PKCS#12 truststore location. When set, this
+    # path is tried first, ahead of the hardcoded container/local-dev
+    # defaults in app/telemetry/otel_truststore.py. Supports multiple
+    # candidate paths separated by os.pathsep (";" on Windows, ":" on
+    # Linux/macOS), tried in order.
+    TRUSTSTORE_PATH = os.getenv("TRUSTSTORE_PATH")
+
     OTEL_SERVICE_NAME = os.getenv("SERVICE_NAME", "file-scan-service")
 
     OTEL_SERVICE_VERSION = os.getenv("SERVICE_VERSION", "1.0.0")
