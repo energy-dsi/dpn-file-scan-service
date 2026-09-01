@@ -36,9 +36,13 @@ There is no ``trustStorePassword`` equivalent to set. So this module:
     3. points ``OTEL_EXPORTER_OTLP_CERTIFICATE`` at that file,
     4. removes it when the process ends.
 
-The format is selected by the truststore file's extension: ``.p12``/``.pfx``
-loads as PKCS12, ``.jks`` loads as JKS. Both are read-only trust operations -
-only the trustedCertEntry certificates are extracted, never a private key.
+The format is selected by the truststore file's actual header, not its
+extension: a JKS/JCEKS magic number (FEEDFEED/CECECECE) loads as JKS,
+anything else loads as PKCS12 - some deployments name a PKCS12 file
+``.jks`` (e.g. the DPN Kafka TLS Secret's truststore.jks, which Kafka itself
+reads as PKCS12), so the extension alone cannot be trusted. Both are
+read-only trust operations - only the trustedCertEntry certificates are
+extracted, never a private key.
 
 BE CLEAR ABOUT WHAT THIS DOES AND DOES NOT GIVE YOU. The password is genuinely
 required and genuinely verified: a wrong password, or a truststore altered by so
@@ -161,23 +165,35 @@ def _find_truststore() -> Optional[str]:
     return None
 
 
+# JKS and JCEKS keystores open with a 4-byte big-endian magic number at
+# offset 0 (this is what pyjks itself checks and reports as "magic number
+# wrong; expected FEEDFEED or CECECECE" on a mismatch). PKCS12 has no
+# equivalent fixed magic number - it is a BER/DER-encoded PKCS7 ContentInfo -
+# so JKS is the only format positively identifiable by its header; anything
+# else here is treated as PKCS12, the only other format this module supports.
+_JKS_MAGIC = b"\xfe\xed\xfe\xed"
+_JCEKS_MAGIC = b"\xce\xce\xce\xce"
+
+
 def _load_ca_pem(path: str, password: Optional[str]) -> bytes:
     """Return every certificate in *path* concatenated as PEM.
 
-    Dispatches on file extension: .p12/.pfx -> PKCS12, .jks -> JKS.
+    Dispatches on the file's actual header, not its extension: some
+    deployments hand this module a file that is named .jks but whose content
+    is really PKCS12 (e.g. the DPN Kafka TLS Secret's truststore.jks, which
+    Kafka itself reads with ssl.truststore.type=PKCS12) - trusting the
+    extension there would always mis-parse it as JKS and fail.
     """
-    ext = os.path.splitext(path)[1].lower()
+    try:
+        with open(path, "rb") as handle:
+            header = handle.read(4)
+    except OSError as exc:
+        raise TruststoreError(f"cannot read truststore {path}: {exc}") from exc
 
-    if ext in (".p12", ".pfx"):
-        return _load_pkcs12_pem(path, password)
-
-    if ext == ".jks":
+    if header in (_JKS_MAGIC, _JCEKS_MAGIC):
         return _load_jks_pem(path, password)
 
-    raise TruststoreError(
-        f"truststore {path} has an unrecognised extension {ext!r}; "
-        "expected .p12, .pfx, or .jks"
-    )
+    return _load_pkcs12_pem(path, password)
 
 
 def _load_pkcs12_pem(path: str, password: Optional[str]) -> bytes:
