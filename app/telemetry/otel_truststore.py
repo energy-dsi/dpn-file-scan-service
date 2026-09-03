@@ -12,16 +12,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """
-otlp_truststore - take OTLP CA trust from the password-protected PKCS12 or
-JKS truststore, the same file the JVM services consume.
+otlp_truststore - take OTLP CA trust from the password-protected PKCS12
+truststore, the same file the JVM services consume.
 
 Why this exists
 ---------------
-The DPN PKI ships trust anchors in Java container formats for JVM services
-(Keycloak, Kafka UI: PKCS12 keystore/truststore, or plain JKS), alongside a
-PEM (rootCA.crt / ca.crt) for Go and Python. This module makes the Java
-container format directly usable by Python producers too: one file to ship,
-one password to rotate, and the tamper-evidence its MAC/hash provides.
+The DPN PKI ships one trust anchor in two formats:
+
+    dpn-observability-truststore.p12   PKCS12 + password   (Keycloak, Kafka UI)
+    rootCA.crt                         PEM                 (Go and Python)
+
+Both hold the identical NESO-DSI-Root-CA certificate. This module makes the
+``.p12`` the single distributed artefact for Python producers too: one file to
+ship, one password to rotate, and the tamper-evidence a PKCS12 MAC provides.
 
 What it actually does
 ---------------------
@@ -29,20 +32,11 @@ Python has no truststore support at any layer - not ``ssl``, not ``requests``,
 not the OTLP exporters - because PKCS12 and JKS are Java container formats.
 There is no ``trustStorePassword`` equivalent to set. So this module:
 
-    1. opens the truststore with the password - ``cryptography`` parses
-       PKCS12 (.p12/.pfx), ``pyjks`` parses JKS (.jks); the standard library
-       can parse neither,
+    1. opens the .p12 with the password (``cryptography`` parses PKCS12, which
+       the standard library cannot),
     2. writes the CA certificates inside it to a private temporary PEM file,
     3. points ``OTEL_EXPORTER_OTLP_CERTIFICATE`` at that file,
     4. removes it when the process ends.
-
-The format is selected by the truststore file's actual header, not its
-extension: a JKS/JCEKS magic number (FEEDFEED/CECECECE) loads as JKS,
-anything else loads as PKCS12 - some deployments name a PKCS12 file
-``.jks`` (e.g. the DPN Kafka TLS Secret's truststore.jks, which Kafka itself
-reads as PKCS12), so the extension alone cannot be trusted. Both are
-read-only trust operations - only the trustedCertEntry certificates are
-extracted, never a private key.
 
 BE CLEAR ABOUT WHAT THIS DOES AND DOES NOT GIVE YOU. The password is genuinely
 required and genuinely verified: a wrong password, or a truststore altered by so
@@ -77,35 +71,30 @@ import logging
 import os
 import signal
 import tempfile
-from typing import Optional
+import threading
 from app.config.settings import Settings
+from typing import Optional
 
 _LOG = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Truststore location.
+# Hardcoded truststore location.
 #
 # A single literal path cannot cover both cases: inside a container the PKI is
 # bind-mounted at /certs (every service in docker-compose.observability-full.yml
 # mounts ../../certs/dpn-observability there), while a developer running a
 # producer directly on Windows has it under the checkout's sibling certs dir.
-# So this is an ordered list of candidates and the first one that exists wins.
+# So this is an ordered list of hardcoded candidates and the first one that
+# exists wins - still no environment variable to set, in either place.
 #
-# TRUSTSTORE_PATH (env, via Settings) REPLACES the hardcoded defaults below
-# when set, so a deployment shape that puts the store somewhere else (a
-# different mount point, a Kubernetes projected volume, etc.) can be pointed
-# at it without a code change, with no hardcoded fallback still being tried.
-# It accepts one or more paths separated by os.pathsep, tried in order.
-# Existing deployments that set nothing keep using the hardcoded defaults
-# unchanged.
+# ADD A PATH HERE rather than reaching for an env var if a new deployment shape
+# puts the store somewhere else.
 # ---------------------------------------------------------------------------
-# Repo root: this file is <repo>/app/telemetry/otel_truststore.py, so three
-# dirname() hops from its absolute path land on <repo> (file-scan-app).
 _REPO_ROOT = os.path.dirname(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 )
 
-_DEFAULT_TRUSTSTORE_PATHS = (
+""" _DEFAULT_TRUSTSTORE_PATHS = (
     # Container: docker-compose.yml bind-mounts ./.certs -> /certs:ro, so a
     # truststore dropped into the repo's .certs/ dir appears here. The only
     # entry that matters in a deployed producer.
@@ -113,7 +102,9 @@ _DEFAULT_TRUSTSTORE_PATHS = (
     # Local development on the host: the repo's own .certs/ directory (same dir
     # that already holds rootCA.crt for the plain PEM path).
     os.path.join(_REPO_ROOT, ".certs", "dpn-observability-truststore.p12"),
-)
+) """
+
+DEFAULT_TRUSTSTORE_PATH = "/etc/kafka/secrets/truststore.jks"
 
 
 def _build_truststore_paths() -> tuple[str, ...]:
@@ -145,6 +136,7 @@ ENV_CERTIFICATE = "OTEL_EXPORTER_OTLP_CERTIFICATE"
 # traces, metrics) reuse one file rather than decrypting three times and
 # leaking two of them.
 _extracted_pem: Optional[str] = None
+_lock = threading.Lock()
 
 
 class TruststoreError(RuntimeError):
@@ -154,8 +146,6 @@ class TruststoreError(RuntimeError):
     trust anchor has been located, a producer should stop rather than quietly
     switch to a different one.
     """
-
-
 def _find_truststore() -> Optional[str]:
     """Return the first hardcoded truststore path that exists, or None."""
     for candidate in TRUSTSTORE_PATHS:
@@ -164,40 +154,43 @@ def _find_truststore() -> Optional[str]:
     _LOG.debug("no truststore at any of: %s", ", ".join(TRUSTSTORE_PATHS))
     return None
 
+def truststore_password_env() -> str:
+    """Return the name of the env var holding the truststore password."""
+    return Settings.TRUSTSTORE_PASSWORD
 
-# JKS and JCEKS keystores open with a 4-byte big-endian magic number at
-# offset 0 (this is what pyjks itself checks and reports as "magic number
-# wrong; expected FEEDFEED or CECECECE" on a mismatch). PKCS12 has no
-# equivalent fixed magic number - it is a BER/DER-encoded PKCS7 ContentInfo -
-# so JKS is the only format positively identifiable by its header; anything
-# else here is treated as PKCS12, the only other format this module supports.
-_JKS_MAGIC = b"\xfe\xed\xfe\xed"
-_JCEKS_MAGIC = b"\xce\xce\xce\xce"
+
+def truststore_password() -> Optional[str]:
+    """Return the truststore password, or None when the environment has none.
+
+    None is returned rather than a built-in default so that a store which cannot
+    be opened fails loudly instead of being opened with a password that happened
+    to be compiled in. configure() turns None into a TruststoreError naming the
+    variable it looked for.
+    """
+    return (os.getenv(truststore_password_env()) or "").strip() or None
+
+
+def _resolve_truststore_path() -> str:
+    """Return the truststore path, or raise if the resolved path does not exist.
+
+    OTEL_TRUSTSTORE_PATH overrides DEFAULT_TRUSTSTORE_PATH outright when set, so
+    a Secret whose key is not "truststore.jks" is a deployment decision rather
+    than a code change and an image rebuild. There is no fallback list: unlike
+    the password, a missing or wrong path has nothing safe to guess at, so this
+    always resolves to exactly one location and validates it immediately.
+    """
+    path = (Settings.TRUSTSTORE_PATH or DEFAULT_TRUSTSTORE_PATH).strip()
+    if not os.path.isfile(path):
+        raise TruststoreError(
+            f"truststore not found at {path!r}. Set {TRUSTSTORE_PATH} to "
+            "override, or confirm the dpn-tls Secret is mounted at "
+            "/etc/kafka/secrets and carries a truststore.jks key."
+        )
+    return path
 
 
 def _load_ca_pem(path: str, password: Optional[str]) -> bytes:
-    """Return every certificate in *path* concatenated as PEM.
-
-    Dispatches on the file's actual header, not its extension: some
-    deployments hand this module a file that is named .jks but whose content
-    is really PKCS12 (e.g. the DPN Kafka TLS Secret's truststore.jks, which
-    Kafka itself reads with ssl.truststore.type=PKCS12) - trusting the
-    extension there would always mis-parse it as JKS and fail.
-    """
-    try:
-        with open(path, "rb") as handle:
-            header = handle.read(4)
-    except OSError as exc:
-        raise TruststoreError(f"cannot read truststore {path}: {exc}") from exc
-
-    if header in (_JKS_MAGIC, _JCEKS_MAGIC):
-        return _load_jks_pem(path, password)
-
-    return _load_pkcs12_pem(path, password)
-
-
-def _load_pkcs12_pem(path: str, password: Optional[str]) -> bytes:
-    """Return every certificate in a PKCS12 (.p12/.pfx) file as PEM."""
+    """Return every certificate in *path* concatenated as PEM."""
     try:
         from cryptography.hazmat.primitives.serialization import Encoding, pkcs12
     except ImportError as exc:  # pragma: no cover - depends on the environment
@@ -224,9 +217,10 @@ def _load_pkcs12_pem(path: str, password: Optional[str]) -> bytes:
         # indistinguishable, so name both possibilities.
         raise TruststoreError(
             f"could not open truststore {path}: {exc}. Either TRUSTSTORE_PASSWORD "
-            "in this module no longer matches P12_PASS in "
-            "config/certs/generate-certs.sh, or the file has been altered since "
-            "it was created (a PKCS12 MAC covers the whole file)."
+            f"{truststore_password_env()} does not match the password the store "
+            "was built with (P12_PASS in config/certs/generate-certs.sh), or "
+            "the file has been altered since it was created (a PKCS12 MAC "
+            "covers the whole file)."
         ) from exc
 
     # A truststore holds trustedCertEntry items only, which land in
@@ -246,110 +240,56 @@ def _load_pkcs12_pem(path: str, password: Optional[str]) -> bytes:
     return b"".join(cert.public_bytes(Encoding.PEM) for cert in certs)
 
 
-def _load_jks_pem(path: str, password: Optional[str]) -> bytes:
-    """Return every certificate in a JKS (.jks) file as PEM.
+def configure() -> str:
+    """Point OTLP CA trust at the common PKCS12 truststore.
 
-    Uses the ``pyjks`` package (import name ``jks``), the only Python library
-    that understands the Java KeyStore binary format - the standard library
-    and ``cryptography`` do not. Only trustedCertEntry items are read; no
-    private key material is ever decrypted (this is a truststore, not a
-    keystore), so pyjks's optional Twofish-dependent BKS/UBER key-decryption
-    code path is never exercised and that dependency is intentionally not
-    installed - see requirements.txt.
-    """
-    try:
-        import jks
-    except ImportError as exc:  # pragma: no cover - depends on the environment
-        raise TruststoreError(
-            f"found truststore {path} but the 'pyjks' package is not "
-            "installed; it is required to read JKS from Python"
-        ) from exc
-
-    try:
-        from cryptography import x509
-        from cryptography.hazmat.primitives.serialization import Encoding
-    except ImportError as exc:  # pragma: no cover - depends on the environment
-        raise TruststoreError(
-            f"found truststore {path} but the 'cryptography' package is not "
-            "installed; it is required to convert JKS certificates to PEM"
-        ) from exc
-
-    # jks.KeyStore.load() wants a real password string, unlike PKCS12's
-    # load_pkcs12() which accepts None for "no password". JKS always has one.
-    try:
-        keystore = jks.KeyStore.load(path, password or "")
-    except jks.util.KeystoreSignatureException as exc:
-        raise TruststoreError(
-            f"could not open truststore {path}: {exc}. Either TRUSTSTORE_PASSWORD "
-            "no longer matches the password this JKS file was created with, or "
-            "the file has been altered since it was created (JKS covers the "
-            "whole store with an integrity hash)."
-        ) from exc
-    except jks.util.KeystoreException as exc:
-        raise TruststoreError(f"could not open truststore {path}: {exc}") from exc
-
-    # A truststore holds trustedCertEntry items in keystore.certs. Private-key
-    # entries (keystore.private_keys) are deliberately never touched here.
-    certs = [
-        x509.load_der_x509_certificate(entry.cert)
-        for entry in keystore.certs.values()
-    ]
-
-    if not certs:
-        raise TruststoreError(
-            f"truststore {path} opened successfully but contains no certificates"
-        )
-
-    _LOG.debug("loaded %d certificate(s) from %s", len(certs), path)
-    return b"".join(cert.public_bytes(Encoding.PEM) for cert in certs)
-
-
-def configure() -> Optional[str]:
-    """Point OTLP CA trust at the PKCS12 truststore, if one is present.
-
-    Returns the path of the extracted PEM, or None when no truststore was found
-    at any hardcoded location. Safe to call repeatedly.
+    Returns the path of the extracted PEM. Raises TruststoreError if the
+    resolved truststore path does not exist, the password is missing, or the
+    file cannot be opened - there is no silent no-op any more. Call this only
+    when a truststore is actually required; otlp_transport does so only when
+    TLS is in play. Safe to call repeatedly and from any thread.
     """
     global _extracted_pem
 
-    if _extracted_pem is not None:
-        return _extracted_pem
+    with _lock:
+        if _extracted_pem is not None:
+            return _extracted_pem
 
-    truststore = _find_truststore()
-    if truststore is None:
-        return None
+        truststore = _find_truststore()
+        if truststore is None:
+            return None
 
-    existing = (os.getenv(ENV_CERTIFICATE) or "").strip()
-    if existing:
-        # Both present is ambiguous about which anchor wins, and the exporters
-        # read ENV_CERTIFICATE themselves - so say which one is being used
-        # rather than letting it depend on import order.
-        _LOG.warning(
-            "truststore %s found and %s is also set; the truststore takes "
-            "precedence and %s will be overwritten",
-            truststore, ENV_CERTIFICATE, ENV_CERTIFICATE,
-        )
+        existing = (os.getenv(ENV_CERTIFICATE) or "").strip()
+        if existing:
+            # Both present is ambiguous about which anchor wins, and the exporters
+            # read ENV_CERTIFICATE themselves - so say which one is being used
+            # rather than letting it depend on import order.
+            _LOG.warning(
+                "truststore %s found and %s is also set; the truststore takes "
+                "precedence and %s will be overwritten",
+                truststore, ENV_CERTIFICATE, ENV_CERTIFICATE,
+            )
 
-    pem = _load_ca_pem(truststore, TRUSTSTORE_PASSWORD)
+        pem = _load_ca_pem(truststore, TRUSTSTORE_PASSWORD)
 
-    # mkstemp gives 0600 and an O_EXCL create, so no other user on the host can
-    # read or pre-create the file. The contents are a public CA, but the PATH is
-    # what the TLS stack trusts - a world-writable one would be swappable.
-    fd, pem_path = tempfile.mkstemp(prefix="otlp-ca-", suffix=".pem")
-    try:
-        with os.fdopen(fd, "wb") as handle:
-            handle.write(pem)
-    except Exception:
-        os.unlink(pem_path)
-        raise
+        # mkstemp gives 0600 and an O_EXCL create, so no other user on the host can
+        # read or pre-create the file. The contents are a public CA, but the PATH is
+        # what the TLS stack trusts - a world-writable one would be swappable.
+        fd, pem_path = tempfile.mkstemp(prefix="otlp-ca-", suffix=".pem")
+        try:
+            with os.fdopen(fd, "wb") as handle:
+                handle.write(pem)
+        except Exception:
+            os.unlink(pem_path)
+            raise
 
-    _install_cleanup(pem_path)
+        _install_cleanup(pem_path)
 
-    os.environ[ENV_CERTIFICATE] = pem_path
-    _extracted_pem = pem_path
+        os.environ[ENV_CERTIFICATE] = pem_path
+        _extracted_pem = pem_path
 
-    _LOG.info("OTLP CA trust taken from truststore %s", truststore)
-    return pem_path
+        _LOG.info("OTLP CA trust taken from truststore %s", truststore)
+        return pem_path
 
 
 def _install_cleanup(path: str) -> None:
