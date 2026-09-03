@@ -50,6 +50,35 @@ class Settings:
     # Linux/macOS), tried in order.
     TRUSTSTORE_PATH = os.getenv("TRUSTSTORE_PATH")
 
+    # OAuth2 client-credentials settings for authenticating OTLP exports to
+    # the collector against Keycloak (app/telemetry/otel_oauth.py). Uses its
+    # own dedicated client (dpn-service-client) and secret - deliberately NOT
+    # the Azure Service Principal's CLIENT_ID/CLIENT_SECRET. Reusing a secret
+    # across unrelated trust domains (Azure AD vs Keycloak) is exactly the
+    # mistake this was split out to avoid.
+    #
+    # Explicit master switch. Defaults to enabled so existing setups that
+    # configure CLIENT_ID/TOKEN_ENDPOINT_URL without ever setting this flag
+    # keep working unchanged; set to "false" to force OAuth off regardless of
+    # what else is configured.
+    OTEL_OAUTH_ENABLED = os.getenv("OTEL_OAUTH_ENABLED", "true").lower() == "true"
+
+    OTEL_OAUTH_CLIENT_ID = os.getenv("OTEL_OAUTH_CLIENT_ID")
+
+    OTEL_OAUTH_TOKEN_ENDPOINT_URL = os.getenv("OTEL_OAUTH_TOKEN_ENDPOINT_URL")
+
+    # Prefer a mounted file (Key Vault CSI, matching CLIENT_SECRET_FILE's
+    # pattern) over a raw env value when both are set - a secret should not
+    # sit in plaintext env vars any longer than necessary.
+    OTEL_OAUTH_CLIENT_SECRET_FILE = os.getenv("OTEL_OAUTH_CLIENT_SECRET_FILE")
+
+    OTEL_OAUTH_CLIENT_SECRET = os.getenv("OTEL_OAUTH_CLIENT_SECRET")
+
+    # CA used to verify the token endpoint's TLS certificate. Falls back to
+    # the OTLP CA (certificate_file passed into build_auth) when unset, since
+    # Keycloak's cert is signed by the same CA in this deployment.
+    OTEL_OAUTH_CA_LOCATION = os.getenv("OTEL_OAUTH_CA_LOCATION")
+
     OTEL_SERVICE_NAME = os.getenv("SERVICE_NAME", "file-scan-service")
 
     OTEL_SERVICE_VERSION = os.getenv("SERVICE_VERSION", "1.0.0")
@@ -62,10 +91,6 @@ class Settings:
     CLIENT_ID_FILE = os.getenv("CLIENT_ID_FILE")
 
     CLIENT_SECRET_FILE = os.getenv("CLIENT_SECRET_FILE")
-
-    CLIENT_ID = os.getenv("CLIENT_ID")
-
-    CLIENT_SECRET = os.getenv("CLIENT_SECRET")
 
     SERVICE_BUS_NAMESPACE = os.getenv("SERVICE_BUS_NAMESPACE")
 

@@ -4,6 +4,7 @@ Configure OpenTelemetry.
 
 import logging
 import os
+import requests
 from opentelemetry import metrics
 from opentelemetry import trace
 from opentelemetry._logs import set_logger_provider
@@ -34,6 +35,7 @@ from opentelemetry.sdk._logs.export import (
 
 from app.telemetry.resource import resource
 from app.telemetry import otel_truststore
+from app.telemetry import otel_oauth
 from app.config.settings import Settings
 
 _initialized = False
@@ -83,6 +85,18 @@ def configure_telemetry():
     # extracted PEM wins; falls back to the configured rootCA.crt otherwise.
     certificate_file = os.getenv("OTEL_EXPORTER_OTLP_CERTIFICATE")
 
+    # OAuth2 client-credentials auth against Keycloak, shared across the
+    # three exporters so their background export threads reuse one cached
+    # token instead of each fetching their own. None (no-op) when unset.
+    oauth = otel_oauth.build_auth(verify=certificate_file or True)
+
+    def _session_with_auth() -> "requests.Session | None":
+        if oauth is None:
+            return None
+        session = requests.Session()
+        session.auth = oauth
+        return session
+
     #
     # Trace Provider
     #
@@ -94,6 +108,7 @@ def configure_telemetry():
             OTLPSpanExporter(
                 endpoint=f"{base_endpoint}/v1/traces",
                 certificate_file=certificate_file,
+                session=_session_with_auth(),
             )
         )
     )
@@ -104,6 +119,7 @@ def configure_telemetry():
         OTLPMetricExporter(
             endpoint=f"{base_endpoint}/v1/metrics",
             certificate_file=certificate_file,
+            session=_session_with_auth(),
         )
     )
 
@@ -121,6 +137,7 @@ def configure_telemetry():
             OTLPLogExporter(
                 endpoint=f"{base_endpoint}/v1/logs",
                 certificate_file=certificate_file,
+                session=_session_with_auth(),
             )
         )
     )
