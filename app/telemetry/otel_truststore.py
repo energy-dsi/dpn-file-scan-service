@@ -94,7 +94,7 @@ _REPO_ROOT = os.path.dirname(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 )
 
-""" _DEFAULT_TRUSTSTORE_PATHS = (
+_DEFAULT_TRUSTSTORE_PATHS = (
     # Container: docker-compose.yml bind-mounts ./.certs -> /certs:ro, so a
     # truststore dropped into the repo's .certs/ dir appears here. The only
     # entry that matters in a deployed producer.
@@ -102,7 +102,7 @@ _REPO_ROOT = os.path.dirname(
     # Local development on the host: the repo's own .certs/ directory (same dir
     # that already holds rootCA.crt for the plain PEM path).
     os.path.join(_REPO_ROOT, ".certs", "dpn-observability-truststore.p12"),
-) """
+)
 
 DEFAULT_TRUSTSTORE_PATH = "/etc/kafka/secrets/truststore.jks"
 
