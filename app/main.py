@@ -44,7 +44,7 @@ async def lifespan(_app):
 
         logger.info("Azure Service Bus listener started.")
 
-    elif Settings.CLOUD_PROVIDER_TYPE == "S3":
+    elif Settings.CLOUD_PROVIDER_TYPE == "AWS":
 
         logger.info("Starting AWS processor.")
 
