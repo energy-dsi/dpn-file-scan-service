@@ -104,7 +104,7 @@ _DEFAULT_TRUSTSTORE_PATHS = (
     os.path.join(_REPO_ROOT, ".certs", "dpn-observability-truststore.p12"),
 )
 
-DEFAULT_TRUSTSTORE_PATH = "/etc/kafka/secrets/truststore.jks"
+DEFAULT_TRUSTSTORE_PATH = "/etc/secrets/truststore.jks"
 
 
 def _build_truststore_paths() -> tuple[str, ...]:
@@ -184,7 +184,7 @@ def _resolve_truststore_path() -> str:
         raise TruststoreError(
             f"truststore not found at {path!r}. Set {TRUSTSTORE_PATH} to "
             "override, or confirm the dpn-tls Secret is mounted at "
-            "/etc/kafka/secrets and carries a truststore.jks key."
+            "/etc/secrets and carries a truststore.jks key."
         )
     return path
 
