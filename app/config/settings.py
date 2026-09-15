@@ -34,7 +34,18 @@ class Settings:
         os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT") or os.getenv("OTEL_ENDPOINT")
     )
 
-    OTEL_EXPORTER_OTLP_PROTOCOL = os.getenv("OTEL_EXPORTER_OTLP_PROTOCOL", "http/protobuf")
+    # No hardcoded default here on purpose - app/telemetry/otel_endpoint.py
+    # is the single place that decides the default protocol (from
+    # OTEL_EXPORTER_OTLP_INSECURE) when this is unset. An explicit value here
+    # always wins over that default.
+    OTEL_EXPORTER_OTLP_PROTOCOL = os.getenv("OTEL_EXPORTER_OTLP_PROTOCOL")
+
+    # Selects the DEFAULT scheme/port/protocol for the OTLP endpoint via
+    # app/telemetry/otel_endpoint.py: "true" -> grpc, http, port 4317;
+    # "false" -> http/protobuf, https, port 4318. Only fills in whichever of
+    # scheme/port/protocol is not explicitly given elsewhere (see that
+    # module's docstring for the exact precedence rules).
+    OTEL_EXPORTER_OTLP_INSECURE = os.getenv("OTEL_EXPORTER_OTLP_INSECURE", "false").lower() == "true"
 
     # Path to the CA certificate (PEM) used to verify the collector's TLS
     # certificate. Required for HTTPS; if unset, the default certifi bundle is
