@@ -64,6 +64,12 @@ def _build_http_exporters(resolved, certificate_file, oauth):
             return None
         session = requests.Session()
         session.auth = oauth
+        # The exporter only applies certificate_file to a session it creates
+        # itself - supplying our own session here means we're responsible for
+        # its TLS verification too, or it silently falls back to the system
+        # CA trust store (which doesn't include our internal CA) and every
+        # export fails with CERTIFICATE_VERIFY_FAILED.
+        session.verify = certificate_file or True
         return session
 
     span_exporter = OTLPSpanExporter(
