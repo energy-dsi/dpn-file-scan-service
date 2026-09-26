@@ -1,0 +1,65 @@
+# =============================================================================
+# File Scan Service — AWS dev-dpn01 values
+# EKS     : <<your specific value>>
+# Account : <<your specific value>>
+# Region  : eu-west-2
+#
+# STATUS: draft — NOT yet ready to deploy. Blocked on:
+#   1. FILESCAN_CLIENT_ID / FILESCAN_CLIENT_SECRET must exist in Secrets
+#      Manager under secretsManager.secretPrefix before first deploy.
+#   2. serviceAccount.irsaRoleArn must point at a real IAM role (trust policy
+#      scoped to system:serviceaccount:ns-dpn-01:dpn-file-scan-service) with
+#      secretsmanager:GetSecretValue on the prefix below, s3 read on
+#      sourceBucket, s3 read/write on destBucket, and sqs:ReceiveMessage/
+#      DeleteMessage/GetQueueAttributes on the queue below — none of this
+#      IAM exists yet (same open item as aws/test-dpn01.yaml).
+#
+# S3_ENDPOINT/SQS_ENDPOINT/SNS_ENDPOINT/SNS_TOPIC deliberately omitted: the
+# app resolves S3/SQS endpoints automatically from AWS_REGION (see
+# app/config/aws_config.py), and SNS_TOPIC/SNS_ENDPOINT are unused by this
+# app entirely (it only consumes from SQS; GuardDuty -> SNS -> SQS fan-out
+# happens outside the app).
+# =============================================================================
+
+cloudProvider: aws
+
+namespace: ns-dpn-01
+
+imagePullSecret: ghcr-pull-secret
+
+image:
+  repository: <<GHCR IMAGE REGISTRY NAME>>/dpn-file-scan-service
+  tag: ""
+  pullPolicy: Always
+
+replicaCount: 1
+
+secretsManager:
+  enabled: true
+  secretPrefix: "dpn/dev-dpn01/file-scan-service"
+
+serviceAccount:
+  create: true
+  name: "dpn-file-scan-service"
+  irsaRoleArn: "<<your specific value>>"
+
+env:
+  environment: "development"
+  logLevel: "info"
+
+  enableTelemetry: "true"
+  testing: "false"
+  otelEndpoint: "http://dpn-otel-collector.ns-dpn-health-01.svc.cluster.local:4317"
+  otelExporterProtocol: "grpc"
+  otelExporterInsecure: "true"
+  serviceName: "dpn-file-scan-service"
+  serviceVersion: "1.0.0"
+
+  cloudprovidertype: "AWS"
+  clientIdFile: "/mnt/keyvault/FILESCAN-CLIENT-ID"
+  clientSecretFile: "/mnt/keyvault/FILESCAN-CLIENT-SECRET"
+
+  awsRegion: "eu-west-2"
+  sourceBucket: "<<your specific value>>"
+  destBucket: "<<your specific value>>"
+  sqsQueueName: "dpn-dev-01-file-scan-results2"

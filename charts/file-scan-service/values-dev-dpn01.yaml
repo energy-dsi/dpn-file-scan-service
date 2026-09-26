@@ -1,0 +1,53 @@
+namespace: ns-dpn-01
+
+image:
+  repository: "<<your specific value>>"
+  tag: ""
+  pullPolicy: Always
+
+replicaCount: 1
+
+keyvault:
+  name: <<your specific value>>
+  clientID: <<your specific value>>
+  tenantId: "<<your specific value>>"
+
+  objects:
+    - name: FILESCAN-CLIENT-ID
+      type: secret
+
+    - name: FILESCAN-CLIENT-SECRET
+      type: secret
+
+env:
+  environment: "development"
+  logLevel: "info"
+
+  enableTelemetry: "true"
+  testing: "false"
+  otelEndpoint: "https://dpn-otel-collector.ns-dpn-health-01.svc.cluster.local:4318"
+  otelExporterProtocol: "http/protobuf"
+  # Reuses the existing Kafka TLS Secret (dpn-tls), mounted at
+  # /etc/secrets by deployment.yaml. truststore.jks is actually PKCS#12
+  # despite its .jks name - the same file Kafka itself reads with
+  # ssl.truststore.type=PKCS12 - so otel_truststore.py (byte-sniffing dispatch,
+  # not extension-based) decrypts it with TRUSTSTORE_PASSWORD below and
+  # extracts its CA to a temporary PEM, overwriting otelExporterCertificate.
+  otelExporterCertificate: "/etc/secrets/truststore.jks"
+  truststorePath: "/etc/secrets/truststore.jks"
+  otelTlsSecretName: "dpn-tls"
+  serviceName: "dpn-file-scan-service"
+  serviceVersion: "1.0.0"
+
+  serviceBusNamespace: "<<your specific value>>"
+  sourceStorageAccount: "<<your specific value>>"
+  sourceContainer: "dp-consumer-raw"
+  destStorageAccount: "<<your specific value>>"
+  destContainer: "dp-consumer-stage"
+
+  cloudprovidertype: "AZURE"
+  tenantId: "<<your specific value>>"
+  topicname: "dpn-fileupload-scan-results"
+  subscriptionname: "dpn-fileupload-scan-results-sub"
+  clientIdFile: "/mnt/keyvault/FILESCAN-CLIENT-ID"
+  clientSecretFile: "/mnt/keyvault/FILESCAN-CLIENT-SECRET"

@@ -1,0 +1,29 @@
+#version: '3.9'
+ 
+services:
+ 
+  file-scan-app:
+ 
+    build: .
+    env_file:
+      - .env
+    volumes:
+      - ./local-secrets:/mnt/keyvault:ro
+      - ./.certs:/certs:ro
+
+    container_name: file-scan-app
+
+    ports:
+      - "8080:8080"
+
+    environment:
+
+      OTEL_EXPORTER_OTLP_ENDPOINT: https://dpn-otel-collector-health:4318
+ 
+    networks:
+      - dpn-network
+ 
+networks:
+ 
+  dpn-network:
+    external: true

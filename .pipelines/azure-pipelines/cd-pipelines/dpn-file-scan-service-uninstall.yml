@@ -1,0 +1,220 @@
+# =============================================================================
+# File Scan Service - UNINSTALL pipeline
+# -----------------------------------------------------------------------------
+# Same structure as the install CD (dpn-file-scan-service-cd.yml) with the
+# deploy-only steps removed. `helm uninstall` deletes exactly the resources the
+# CD's `helm upgrade --install` created for this release (Deployment, Service,
+# HPA, SecretProviderClass) and nothing else.
+# =============================================================================
+
+parameters:
+- name: ServiceConnection
+  displayName: 'ServiceConnection details'
+  type: string
+  default: 'sc-dpn-dev-001'
+  values:
+      - sc-dpn-dev-001
+      - sc-dpn-dev-002
+      # test: placeholder names — replace with the actual sc-dpn-test-* connections
+      - sc-dpn-test-001
+      - sc-dpn-test-002
+      - sc-dpn-pdev-ppd-001
+      - sc-dpn-ptest-ppd-001
+      - sc-dpn-puat-ppd-001
+
+- name: environment
+  displayName: Environment Name
+  type: string
+  default: 'dev'
+  values:
+      - dev
+      - devtest
+      - test
+      - pdev
+      - ptest
+      - puat
+
+# NOTE: dpncluster applies to dev/devtest/test only (dpn01 + dpn02).
+# pdev/ptest/puat run on dpn01 only; selecting dpn02 for them fails fast
+# in the "Read Environment Variables" guard below.
+- name: dpncluster
+  displayName: Target DPN Cluster (dpn02 = dev/devtest/test only)
+  type: string
+  default: dpn01
+  values:
+    - dpn01
+    - dpn02
+
+# NOTE: the approver group is resolved automatically from the environment
+# (see APPROVAL_GROUP variable) so a pre-prod uninstall cannot be approved by the
+# dev group: dev -> dsi-dev, devtest/test -> dsi-test, pdev/ptest/puat -> dsi-ppd.
+
+trigger:
+  - none
+
+pool:
+  name: <<YOUR AGENT POOL>>
+
+variables:
+  - name: PROJECT_NAME
+    value: 'dpn-file-scan-service'
+  - name: SERVICE_CONNECTION
+    value: '${{ parameters.ServiceConnection }}'
+  # Config file resolution differs by environment family:
+  #   pdev/ptest/puat -> single-name file (config/<env>.json), dpn01 only
+  #   dev/devtest/test -> per-cluster file (config/<env>-<cluster>.json)
+  - ${{ if or(eq(parameters.environment, 'pdev'), eq(parameters.environment, 'ptest'), eq(parameters.environment, 'puat')) }}:
+    - name: PARAMETERS_FILE
+      value: ".pipelines/azure-pipelines/config/${{ parameters.environment }}.json"
+  - ${{ else }}:
+    - name: PARAMETERS_FILE
+      value: ".pipelines/azure-pipelines/config/${{ parameters.environment }}-${{ parameters.dpncluster }}.json"
+  # Approver group by environment family:
+  #   pdev/ptest/puat -> dsi-ppd (pre-prod)
+  #   devtest/test    -> dsi-test
+  #   dev             -> dsi-dev
+  - ${{ if or(eq(parameters.environment, 'pdev'), eq(parameters.environment, 'ptest'), eq(parameters.environment, 'puat')) }}:
+    - name: APPROVAL_GROUP
+      value: dsi-ppd
+  - ${{ elseif or(eq(parameters.environment, 'devtest'), eq(parameters.environment, 'test')) }}:
+    - name: APPROVAL_GROUP
+      value: dsi-test
+  - ${{ else }}:
+    - name: APPROVAL_GROUP
+      value: dsi-dev
+
+stages:
+- stage: Uninstall
+  displayName: "Uninstall"
+
+  jobs:
+  - deployment: Uninstall
+    displayName: "Helm Uninstall"
+    environment: $(APPROVAL_GROUP)
+
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - checkout: self
+          - script: |
+              echo "Environment: ${{ parameters.environment }}"
+              echo "PARAMETERS_FILE: $(PARAMETERS_FILE)"
+
+              # Guard: pdev/ptest/puat run on dpn01 only (no dpn02 infrastructure).
+              ENV="${{ parameters.environment }}"
+              CLUSTER="${{ parameters.dpncluster }}"
+              case "$ENV" in
+                pdev|ptest|puat)
+                  if [ "$CLUSTER" != "dpn01" ]; then
+                    echo "##vso[task.logissue type=error]Environment '$ENV' supports dpn01 only; '$CLUSTER' is not available. Re-run with dpncluster=dpn01."
+                    exit 1
+                  fi
+                  ;;
+              esac
+
+              # Ensure parameters file exists
+              if [ -f "$(Build.SourcesDirectory)/$(PARAMETERS_FILE)" ]; then
+                echo "Reading parameters from $(PARAMETERS_FILE)"
+
+                # Loop through each key-value pair in the JSON file and set pipeline variables
+                for param in $(jq -r 'keys_unsorted | .[]' "$(Build.SourcesDirectory)/$(PARAMETERS_FILE)"); do
+                  value=$(jq -r ".\"$param\"" "$(Build.SourcesDirectory)/$(PARAMETERS_FILE)")
+
+                  # Set the parameter as an Azure DevOps pipeline variable
+                  echo "##vso[task.setvariable variable=$param]$value"
+                  echo "Set parameter $param with $value"
+                done
+              else
+                echo "Error: $(PARAMETERS_FILE) not found!"
+                exit 1
+              fi
+            displayName: "Read Environment Variables"
+
+          - task: AzureCLI@2
+            displayName: 'AKS Auth'
+            inputs:
+              azureSubscription: $(SERVICE_CONNECTION)
+              scriptType: 'bash'
+              addSpnToEnvironment: true
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                set -euo pipefail
+
+                echo "================================================="
+                echo "AZURE AUTH"
+                echo "================================================="
+                az account set --subscription $(AZURE_SUBSCRIPTION_ID)
+                az account show >/dev/null
+                echo "Azure auth OK"
+
+                echo "================================================="
+                echo "INSTALL TOOLS"
+                echo "================================================="
+                if ! command -v kubectl &>/dev/null || ! command -v kubelogin &>/dev/null; then
+                  echo "kubectl or kubelogin not found, installing..."
+                  az aks install-cli --client-version 1.36.1 --kubelogin-version v0.2.8
+                else
+                  echo "kubectl and kubelogin already installed, skipping install"
+                fi
+                kubectl version --client >/dev/null
+                kubelogin --version >/dev/null
+                helm version >/dev/null
+                echo "Tools installed"
+
+                echo "================================================="
+                echo "AKS CONTEXT"
+                echo "================================================="
+                az aks get-credentials \
+                  --resource-group $(RESOURCE_GROUP) \
+                  --name $(AKS_CLUSTER) \
+                  --overwrite-existing
+
+                kubelogin convert-kubeconfig -l azurecli
+                echo "AKS context ready"
+
+          - task: AzureCLI@2
+            displayName: 'Helm Uninstall'
+            inputs:
+              azureSubscription: $(SERVICE_CONNECTION)
+              scriptType: 'bash'
+              addSpnToEnvironment: true
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                set -euo pipefail
+
+                echo "================================================="
+                echo "CURRENT RELEASE STATE"
+                echo "================================================="
+                helm list -n $(NAMESPACE) || true
+
+                # Idempotent: if the release is absent there is nothing to delete.
+                if ! helm status $(PROJECT_NAME) -n $(NAMESPACE) >/dev/null 2>&1; then
+                  echo "Release '$(PROJECT_NAME)' not found in namespace '$(NAMESPACE)'. Nothing to uninstall."
+                  exit 0
+                fi
+
+                echo "================================================="
+                echo "HELM UNINSTALL"
+                echo "================================================="
+                echo "Deleting all resources created by the CD release '$(PROJECT_NAME)' in namespace '$(NAMESPACE)'"
+
+                helm uninstall $(PROJECT_NAME) -n $(NAMESPACE)
+
+                echo "Helm uninstall issued"
+
+                echo "================================================="
+                echo "POST-UNINSTALL VERIFICATION"
+                echo "================================================="
+
+                kubectl rollout status deployment/$(PROJECT_NAME) -n $(NAMESPACE) --timeout=60s 2>/dev/null || true
+
+                echo "Remaining resources labelled app=$(PROJECT_NAME) (expected: none):"
+                kubectl get all -n $(NAMESPACE) -l app=$(PROJECT_NAME) || true
+
+                echo "Remaining Helm releases in namespace:"
+                helm list -n $(NAMESPACE) || true
+
+                echo "================================================="
+                echo "FILE SCAN UNINSTALL COMPLETE"
+                echo "================================================="

@@ -1,0 +1,59 @@
+--find-links packages
+azure-identity==1.23.0
+azure-servicebus==7.14.2
+azure-storage-blob==12.27.0
+websocket-client>=1.8.0
+
+opentelemetry-api==1.42.1
+opentelemetry-sdk==1.42.1
+opentelemetry-exporter-otlp==1.42.1
+
+# Required by app/telemetry/otel_truststore.py to read the PKCS#12 truststore
+# (the stdlib ssl module cannot parse PKCS#12). Also pulled in transitively by
+# azure-identity; pinned here because it is now a direct dependency.
+cryptography>=50.0.0
+
+# Required by app/telemetry/otel_truststore.py to read a JKS truststore (the
+# stdlib and `cryptography` cannot parse JKS; only `pyjks` can). These three
+# are pyjks's actual runtime dependencies for reading a JKS TRUSTSTORE
+# (trustedCertEntry only, no private-key decryption).
+#
+# pyjks itself is intentionally NOT listed here: every pyjks version also
+# hard-declares `twofish` as a dependency, which ships source-only (no wheel
+# at all) and would break this image's wheel-only build
+# (--only-binary=:all:, no compiler in the builder stage). twofish is only
+# imported lazily, inside the BKS/UBER-keystore Twofish-decryption code path,
+# which reading a plain JKS truststore never reaches - so it is safe to skip
+# entirely. pyjks is installed separately in the Dockerfile with --no-deps to
+# avoid pulling it in.
+pyasn1-modules>=0.4.0
+pycryptodomex>=3.20.0
+javaobj-py3>=0.4.4
+
+python-dotenv>=1.2.2
+
+boto3==1.40.0
+
+# NOTE: google-cloud-storage is intentionally NOT installed here. Its transitive
+# dependency google-crc32c publishes no musllinux (Alpine) wheel for Python 3.14,
+# which would force a source build and break the wheel-only image. The service is
+# deployed against Azure; the GCP provider is imported lazily and is unused. To
+# re-enable GCP, add google-cloud-storage back on a glibc base (has cp314 wheels)
+# or once google-crc32c ships musllinux cp314 wheels.
+
+pytest>=9.0.3
+pytest-cov==6.2.1
+pytest-mock==3.14.1
+httpx==0.28.1
+coverage==7.10.6
+pytest-asyncio==1.4.0
+
+fastapi>=0.116.1
+# Plain uvicorn (no [standard]) intentionally: the [standard] extra pulls uvloop,
+# which is not yet compatible with Python 3.14 (asyncio import error). We run on the
+# stdlib asyncio loop instead (see CMD --loop asyncio). Also drops httptools/websockets,
+# which this REST-only service does not use, reducing the C-extension attack surface.
+uvicorn==0.35.0
+# >=2.12 is the first pydantic line with Python 3.14 support; its pinned
+# pydantic-core ships cp314 musllinux wheels so it installs without compiling.
+pydantic>=2.12

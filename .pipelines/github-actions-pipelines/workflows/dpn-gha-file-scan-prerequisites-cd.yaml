@@ -1,0 +1,661 @@
+name: DPN CD - File Scan Prerequisites
+
+# =============================================================================
+# File Scan Service — Prerequisites   (GitHub Actions parity for the ADO
+# file-scan prerequisite pipeline)
+#
+# In one run it provisions the Azure plumbing the file-scan-service depends on:
+#   1. Service Bus topic + subscription (scan-results)
+#   2. Enables Defender for Storage malware scanning (on-upload) on the raw
+#      container's storage account, wired to a custom Event Grid topic
+#   3. Enables the Event Grid topic's system-assigned identity
+#   4. Grants that identity "Azure Service Bus Data Sender" on the SB topic
+#   5. Creates the Event Grid -> Service Bus event subscription (ARM REST) + verify
+#   6. Creates the raw storage container
+#
+# Four values come from .github/config/<cloud>/<env>-<cluster>.json (to stay
+# under the 10-input cap), all prefixed FILESCAN_ so they are easy to find:
+#   FILESCAN_STORAGE_ACCOUNT, FILESCAN_STORAGE_RG,
+#   FILESCAN_SB_SUBSCRIPTION_NAME, FILESCAN_DEFENDER_EVENT_SUBSCRIPTION_NAME
+# Every other resource name is a run-time input (like the ADO parameters).
+# The subscription is pinned to ARM_SUBSCRIPTION_ID from the config JSON (the
+# federated SP's default subscription may differ, causing AuthorizationFailed).
+# environment/cluster/cloud select the GitHub Environment (OIDC secrets) + config JSON.
+#
+# The federated service principal needs, on the target scopes: Service Bus
+# create + Data Owner, Security Admin (Defender settings), Owner/User Access
+# Administrator (role assignment), EventGrid Contributor, and Storage Blob Data
+# Contributor (container create with --auth-mode login).
+# =============================================================================
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Select Environment"
+        required: true
+        default: "test"
+        type: choice
+        options:
+          - dev
+          - test
+
+      cluster:
+        description: "Target DPN Cluster"
+        required: true
+        default: "dpn01"
+        type: choice
+        options:
+          - dpn01
+          - dpn02
+
+      cloud:
+        description: "Target Cloud Provider"
+        required: true
+        default: "aws"
+        type: choice
+        options:
+          - azure
+          - aws
+          - gcp
+
+      containerName:
+        description: "Raw storage container name (Azure only)"
+        required: true
+        default: "dp-consumer-raw"
+        type: string
+
+      serviceBusNamespace:
+        description: "Service Bus namespace (Azure only — leave blank for AWS)"
+        required: false
+        type: string
+
+      serviceBusResourceGroup:
+        description: "Service Bus resource group"
+        required: true
+        default: "<<your specific value>>"
+        type: string
+
+      serviceBusTopicName:
+        description: "Service Bus topic (scan results)"
+        required: true
+        default: "dpn-fileupload-scan-results"
+        type: string
+
+      eventGridResourceGroup:
+        description: "Event Grid custom topic resource group (topic show / event subscription)"
+        required: true
+        default: "<<your specific value>>"
+        type: string
+
+      eventGridTopicResourceGroup:
+        description: "Event Grid topic resource group (identity / role assignment)"
+        required: true
+        default: "<<your specific value>>"
+        type: string
+
+      eventGridCustomTopicName:
+        description: "Event Grid custom topic name"
+        required: true
+        default: "<<your specific value>>"
+        type: string
+
+env:
+  PARAMETERS_FILE: .github/config/${{ inputs.cloud }}/${{ inputs.environment }}-${{ inputs.cluster }}.json
+  HUB_ROLE_ARN: <<your specific value>>
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  prerequisites:
+    name: Provision File Scan Prerequisites
+    runs-on: [self-hosted, vmss]
+    environment: ${{ inputs.environment }}-${{ inputs.cluster }}
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Applied Parameters
+        shell: bash
+        run: |
+          echo "environment=${{ inputs.environment }}"
+          echo "cluster=${{ inputs.cluster }}"
+          echo "cloud=${{ inputs.cloud }}"
+          echo "containerName=${{ inputs.containerName }}"
+          echo "serviceBusNamespace=${{ inputs.serviceBusNamespace }}"
+          echo "serviceBusResourceGroup=${{ inputs.serviceBusResourceGroup }}"
+          echo "serviceBusTopicName=${{ inputs.serviceBusTopicName }}"
+          echo "eventGridResourceGroup=${{ inputs.eventGridResourceGroup }}"
+          echo "eventGridTopicResourceGroup=${{ inputs.eventGridTopicResourceGroup }}"
+          echo "eventGridCustomTopicName=${{ inputs.eventGridCustomTopicName }}"
+
+      - name: Read Deployment Config
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ ! -f "${PARAMETERS_FILE}" ]; then
+            echo "ERROR: ${PARAMETERS_FILE} not found!"
+            exit 1
+          fi
+
+          echo "Loading config from ${PARAMETERS_FILE}"
+          for key in $(jq -r 'keys_unsorted[]' "${PARAMETERS_FILE}"); do
+            value=$(jq -r ".\"$key\"" "${PARAMETERS_FILE}")
+            echo "${key}=${value}" >> "$GITHUB_ENV"
+            echo "Set ${key}"
+          done
+
+      - name: Validate Required Values (Azure)
+        if: ${{ inputs.cloud == 'azure' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          missing=0
+
+          # From config JSON (all FILESCAN_ prefixed)
+          for k in FILESCAN_STORAGE_ACCOUNT FILESCAN_STORAGE_RG \
+                   FILESCAN_SB_SUBSCRIPTION_NAME FILESCAN_DEFENDER_EVENT_SUBSCRIPTION_NAME; do
+            if [ -z "${!k:-}" ]; then
+              echo "::error::${k} is empty in ${PARAMETERS_FILE} — fill it in."
+              missing=1
+            fi
+          done
+
+          # From inputs
+          if [ -z "${{ inputs.serviceBusNamespace }}" ]; then
+            echo "::error::Input 'serviceBusNamespace' is empty."
+            missing=1
+          fi
+
+          [ "$missing" -eq 0 ] || exit 1
+          echo "Required values present."
+
+      - name: Validate Required Values (AWS)
+        if: ${{ inputs.cloud == 'aws' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          missing=0
+
+          for k in FILESCAN_SOURCE_BUCKET FILESCAN_DEST_BUCKET FILESCAN_SNS_TOPIC_NAME FILESCAN_SQS_QUEUE_NAME; do
+            if [ -z "${!k:-}" ]; then
+              echo "::error::${k} is empty in ${PARAMETERS_FILE} — fill it in."
+              missing=1
+            fi
+          done
+
+          [ "$missing" -eq 0 ] || exit 1
+          echo "Required values present."
+
+      - name: Cloud Login
+        uses: ./.github/actions/cloud-login
+        with:
+          cloud: ${{ inputs.cloud }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          aws-region: ${{ env.AWS_REGION }}
+          aws-account-id: ${{ env.AWS_ACCOUNT_ID }}
+          eks-cluster: ${{ env.EKS_CLUSTER }}
+
+      - name: Export Subscription ID
+        if: ${{ inputs.cloud == 'azure' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Pin to the target subscription from the config JSON. The federated SP's
+          # DEFAULT subscription may be a different one — relying on `az account show`
+          # targets the wrong subscription and fails with AuthorizationFailed.
+          echo "SUBSCRIPTION_ID=$ARM_SUBSCRIPTION_ID" >> "$GITHUB_ENV"
+
+      - name: Create Service Bus Topic
+        if: ${{ inputs.cloud == 'azure' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          az servicebus topic show \
+            --resource-group "${{ inputs.serviceBusResourceGroup }}" \
+            --namespace-name "${{ inputs.serviceBusNamespace }}" \
+            --name "${{ inputs.serviceBusTopicName }}" \
+            --query name -o tsv 2>/dev/null || \
+          az servicebus topic create \
+            --resource-group "${{ inputs.serviceBusResourceGroup }}" \
+            --namespace-name "${{ inputs.serviceBusNamespace }}" \
+            --name "${{ inputs.serviceBusTopicName }}" \
+            --max-size 5120 \
+            --default-message-time-to-live P14D
+
+      - name: Create Service Bus Subscription
+        if: ${{ inputs.cloud == 'azure' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          az servicebus topic subscription show \
+            --resource-group "${{ inputs.serviceBusResourceGroup }}" \
+            --namespace-name "${{ inputs.serviceBusNamespace }}" \
+            --topic-name "${{ inputs.serviceBusTopicName }}" \
+            --name "$FILESCAN_SB_SUBSCRIPTION_NAME" \
+            >/dev/null 2>&1 || \
+          az servicebus topic subscription create \
+            --resource-group "${{ inputs.serviceBusResourceGroup }}" \
+            --namespace-name "${{ inputs.serviceBusNamespace }}" \
+            --topic-name "${{ inputs.serviceBusTopicName }}" \
+            --name "$FILESCAN_SB_SUBSCRIPTION_NAME"
+
+      - name: Enable Defender Malware Scanning
+        if: ${{ inputs.cloud == 'azure' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          DEFENDER_SETTINGS_URL="https://management.azure.com/subscriptions/${SUBSCRIPTION_ID}/resourceGroups/${FILESCAN_STORAGE_RG}/providers/Microsoft.Storage/storageAccounts/${FILESCAN_STORAGE_ACCOUNT}/providers/Microsoft.Security/DefenderForStorageSettings/current?api-version=2025-06-01"
+
+          echo "Current Defender settings:"
+          az rest --method GET --url "$DEFENDER_SETTINGS_URL" || true
+
+          echo "Retrieving Event Grid Topic ID..."
+          EVENTGRID_TOPIC_ID=$(az eventgrid topic show \
+            --name "${{ inputs.eventGridCustomTopicName }}" \
+            --resource-group "${{ inputs.eventGridResourceGroup }}" \
+            --query id -o tsv)
+          echo "Event Grid Topic ID: $EVENTGRID_TOPIC_ID"
+
+          cat > defender_body.json <<EOF
+          {
+            "properties": {
+              "isEnabled": true,
+              "overrideSubscriptionLevelSettings": true,
+              "malwareScanning": {
+                "onUpload": {
+                  "isEnabled": true,
+                  "capGBPerMonth": 10000
+                },
+                "scanResultsEventGridTopicResourceId": "${EVENTGRID_TOPIC_ID}"
+              },
+              "sensitiveDataDiscovery": {
+                "isEnabled": false
+              }
+            }
+          }
+          EOF
+
+          echo "Payload:"
+          cat defender_body.json
+
+          echo "Submitting Defender configuration..."
+          az rest --method PUT --url "$DEFENDER_SETTINGS_URL" --body @defender_body.json --output json
+
+          echo "Updated Defender settings:"
+          az rest --method GET --url "$DEFENDER_SETTINGS_URL"
+
+      - name: Enable Event Grid Topic Managed Identity
+        if: ${{ inputs.cloud == 'azure' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          az eventgrid topic update \
+            --resource-group "${{ inputs.eventGridTopicResourceGroup }}" \
+            --name "${{ inputs.eventGridCustomTopicName }}" \
+            --identity systemassigned
+
+          echo "Topic Identity:"
+          az eventgrid topic show \
+            --resource-group "${{ inputs.eventGridTopicResourceGroup }}" \
+            --name "${{ inputs.eventGridCustomTopicName }}" \
+            --query identity
+
+      - name: Grant Event Grid Topic Service Bus Sender
+        if: ${{ inputs.cloud == 'azure' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          TOPIC_PRINCIPAL_ID=$(az eventgrid topic show \
+            --resource-group "${{ inputs.eventGridTopicResourceGroup }}" \
+            --name "${{ inputs.eventGridCustomTopicName }}" \
+            --query identity.principalId -o tsv)
+          echo "Topic Principal ID: $TOPIC_PRINCIPAL_ID"
+
+          SERVICEBUS_TOPIC_ID=$(az servicebus topic show \
+            --resource-group "${{ inputs.serviceBusResourceGroup }}" \
+            --namespace-name "${{ inputs.serviceBusNamespace }}" \
+            --name "${{ inputs.serviceBusTopicName }}" \
+            --query id -o tsv)
+
+          az role assignment create \
+            --assignee-object-id "$TOPIC_PRINCIPAL_ID" \
+            --assignee-principal-type ServicePrincipal \
+            --role "Azure Service Bus Data Sender" \
+            --scope "$SERVICEBUS_TOPIC_ID" \
+            || true
+
+      - name: Create Event Subscription (ARM)
+        if: ${{ inputs.cloud == 'azure' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          EVENTGRID_TOPIC_ID=$(az eventgrid topic show \
+            --name "${{ inputs.eventGridCustomTopicName }}" \
+            --resource-group "${{ inputs.eventGridResourceGroup }}" \
+            --query id -o tsv)
+
+          SERVICEBUS_TOPIC_ID=$(az servicebus topic show \
+            --name "${{ inputs.serviceBusTopicName }}" \
+            --namespace-name "${{ inputs.serviceBusNamespace }}" \
+            --resource-group "${{ inputs.serviceBusResourceGroup }}" \
+            --query id -o tsv)
+
+          SUB_NAME="$FILESCAN_DEFENDER_EVENT_SUBSCRIPTION_NAME"
+
+          cat > eventsub.json <<EOF
+          {
+            "properties": {
+              "deliveryWithResourceIdentity": {
+                "destination": {
+                  "endpointType": "ServiceBusTopic",
+                  "properties": {
+                    "resourceId": "${SERVICEBUS_TOPIC_ID}"
+                  }
+                },
+                "identity": {
+                  "type": "SystemAssigned"
+                }
+              },
+              "eventDeliverySchema": "EventGridSchema",
+              "filter": {
+                "subjectBeginsWith": "",
+                "subjectEndsWith": ""
+              },
+              "retryPolicy": {
+                "maxDeliveryAttempts": 30,
+                "eventTimeToLiveInMinutes": 1440
+              }
+            }
+          }
+          EOF
+
+          echo "Creating Event Subscription ${SUB_NAME}..."
+          cat eventsub.json
+
+          az rest \
+            --method PUT \
+            --headers "Content-Type=application/json" \
+            --url "${EVENTGRID_TOPIC_ID}/providers/Microsoft.EventGrid/eventSubscriptions/${SUB_NAME}?api-version=2023-06-01-preview" \
+            --body @eventsub.json
+
+          echo "Created Event Subscription"
+          az rest \
+            --method GET \
+            --url "${EVENTGRID_TOPIC_ID}/providers/Microsoft.EventGrid/eventSubscriptions/${SUB_NAME}?api-version=2023-06-01-preview"
+
+      - name: Verify Event Grid Configuration
+        if: ${{ inputs.cloud == 'azure' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          EVENTGRID_TOPIC_ID=$(az eventgrid topic show \
+            --name "${{ inputs.eventGridCustomTopicName }}" \
+            --resource-group "${{ inputs.eventGridResourceGroup }}" \
+            --query id -o tsv)
+
+          SUB_NAME="$FILESCAN_DEFENDER_EVENT_SUBSCRIPTION_NAME"
+
+          az rest \
+            --method GET \
+            --url "${EVENTGRID_TOPIC_ID}/providers/Microsoft.EventGrid/eventSubscriptions/${SUB_NAME}?api-version=2023-06-01-preview"
+
+      - name: Verify Event Subscription
+        if: ${{ inputs.cloud == 'azure' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          EVENTGRID_TOPIC_ID=$(az eventgrid topic show \
+            --name "${{ inputs.eventGridCustomTopicName }}" \
+            --resource-group "${{ inputs.eventGridResourceGroup }}" \
+            --query id -o tsv)
+
+          SUB_NAME="$FILESCAN_DEFENDER_EVENT_SUBSCRIPTION_NAME"
+
+          az rest \
+            --method GET \
+            --url "${EVENTGRID_TOPIC_ID}/providers/Microsoft.EventGrid/eventSubscriptions/${SUB_NAME}?api-version=2025-02-15"
+
+      - name: Create Storage Container
+        if: ${{ inputs.cloud == 'azure' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          EXISTS=$(az storage container exists \
+            --account-name "$FILESCAN_STORAGE_ACCOUNT" \
+            --name "${{ inputs.containerName }}" \
+            --auth-mode login \
+            --query exists -o tsv)
+
+          if [ "$EXISTS" != "true" ]; then
+            az storage container create \
+              --account-name "$FILESCAN_STORAGE_ACCOUNT" \
+              --name "${{ inputs.containerName }}" \
+              --auth-mode login \
+              --public-access off
+          else
+            echo "Container ${{ inputs.containerName }} already exists."
+          fi
+
+      ###################################################################
+      # AWS — verify GuardDuty -> SNS -> SQS notification path
+      #
+      # Unlike Azure (Event Grid custom topic + role assignment + event
+      # subscription, all provisioned by this pipeline), the AWS path is
+      # already fully provisioned outside this pipeline:
+      #   GuardDuty Malware Protection (on FILESCAN_SOURCE_BUCKET)
+      #     -> SNS topic FILESCAN_SNS_TOPIC_NAME
+      #     -> SQS queue FILESCAN_SQS_QUEUE_NAME (confirmed subscription)
+      #
+      # This job only verifies that wiring is intact — it does not create
+      # the SNS topic, SQS queue, subscription, or enable GuardDuty. Both
+      # FILESCAN_SOURCE_BUCKET and FILESCAN_DEST_BUCKET are also assumed to
+      # already exist.
+      ###################################################################
+      - name: Verify SNS Topic and Subscription
+        if: ${{ inputs.cloud == 'aws' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          TOPIC_ARN="arn:aws:sns:${AWS_REGION}:${AWS_ACCOUNT_ID}:${FILESCAN_SNS_TOPIC_NAME}"
+
+          echo "Topic attributes:"
+          aws sns get-topic-attributes --topic-arn "$TOPIC_ARN" --region "$AWS_REGION"
+
+          echo ""
+          echo "Subscriptions:"
+          SUBS=$(aws sns list-subscriptions-by-topic \
+            --topic-arn "$TOPIC_ARN" \
+            --region "$AWS_REGION" \
+            --output json)
+          echo "$SUBS"
+
+          QUEUE_ARN="arn:aws:sqs:${AWS_REGION}:${AWS_ACCOUNT_ID}:${FILESCAN_SQS_QUEUE_NAME}"
+
+          MATCH=$(echo "$SUBS" | jq -r --arg qarn "$QUEUE_ARN" \
+            '.Subscriptions[] | select(.Endpoint == $qarn and .SubscriptionArn != "PendingConfirmation") | .SubscriptionArn')
+
+          if [ -z "$MATCH" ]; then
+            echo "::error::No confirmed subscription found from $TOPIC_ARN to $QUEUE_ARN."
+            exit 1
+          fi
+
+          echo "Confirmed subscription: $MATCH"
+
+      - name: Verify SQS Queue and Access Policy
+        if: ${{ inputs.cloud == 'aws' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          QUEUE_URL=$(aws sqs get-queue-url \
+            --queue-name "$FILESCAN_SQS_QUEUE_NAME" \
+            --region "$AWS_REGION" \
+            --query QueueUrl --output text)
+
+          echo "QUEUE_URL=$QUEUE_URL" >> "$GITHUB_ENV"
+          echo "Queue URL: $QUEUE_URL"
+
+          echo ""
+          echo "Queue attributes (incl. access policy):"
+          aws sqs get-queue-attributes \
+            --queue-url "$QUEUE_URL" \
+            --region "$AWS_REGION" \
+            --attribute-names All
+
+      - name: Verify GuardDuty Malware Protection on Source Bucket
+        if: ${{ inputs.cloud == 'aws' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          DETECTOR_ID=$(aws guardduty list-detectors --region "$AWS_REGION" --query "DetectorIds[0]" --output text)
+
+          if [ -z "$DETECTOR_ID" ] || [ "$DETECTOR_ID" = "None" ]; then
+            echo "::error::No GuardDuty detector found in $AWS_REGION."
+            exit 1
+          fi
+
+          echo "Malware Protection plans for detector $DETECTOR_ID:"
+          aws guardduty list-malware-protection-plans --region "$AWS_REGION" 2>/dev/null || \
+            echo "::error::Could not list Malware Protection plans — check IAM permissions (guardduty:ListMalwareProtectionPlans)."
+
+          echo ""
+          echo "NOTE: this step only reports current status. Enabling GuardDuty"
+          echo "Malware Protection on FILESCAN_SOURCE_BUCKET ($FILESCAN_SOURCE_BUCKET)"
+          echo "is a manual/infra-team console action, not provisioned by this pipeline."
+
+      ###################################################################
+      # AWS — IRSA role + Secrets Manager entries for file-scan-service
+      #
+      # Creates (idempotently) the IAM role the chart's ServiceAccount
+      # assumes via IRSA, and the two Secrets Manager entries the AWS
+      # SecretProviderClass reads. Safe to re-run — every step checks for
+      # an existing resource before creating one.
+      ###################################################################
+      - name: Create IAM Role for file-scan-service IRSA
+        if: ${{ inputs.cloud == 'aws' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ROLE_NAME="dpn-file-scan-service-secrets-role"
+          SA_NAMESPACE="$NAMESPACE"
+          SA_NAME="dpn-file-scan-service"
+
+          OIDC_ISSUER=$(aws eks describe-cluster \
+            --name "$EKS_CLUSTER" \
+            --region "$AWS_REGION" \
+            --query "cluster.identity.oidc.issuer" --output text)
+          OIDC_PROVIDER=${OIDC_ISSUER#https://}
+
+          cat > filescan-trust-policy.json <<EOF
+          {
+            "Version": "2012-10-17",
+            "Statement": [
+              {
+                "Effect": "Allow",
+                "Principal": {
+                  "Federated": "arn:aws:iam::${AWS_ACCOUNT_ID}:oidc-provider/${OIDC_PROVIDER}"
+                },
+                "Action": "sts:AssumeRoleWithWebIdentity",
+                "Condition": {
+                  "StringEquals": {
+                    "${OIDC_PROVIDER}:aud": "sts.amazonaws.com",
+                    "${OIDC_PROVIDER}:sub": "system:serviceaccount:${SA_NAMESPACE}:${SA_NAME}"
+                  }
+                }
+              }
+            ]
+          }
+          EOF
+
+          cat > filescan-permissions-policy.json <<EOF
+          {
+            "Version": "2012-10-17",
+            "Statement": [
+              {
+                "Effect": "Allow",
+                "Action": ["secretsmanager:GetSecretValue", "secretsmanager:DescribeSecret"],
+                "Resource": "arn:aws:secretsmanager:${AWS_REGION}:${AWS_ACCOUNT_ID}:secret:dpn/${{ inputs.environment }}-${{ inputs.cluster }}/file-scan-service/*"
+              },
+              {
+                "Effect": "Allow",
+                "Action": ["s3:GetObject", "s3:GetObjectTagging", "s3:DeleteObject", "s3:ListBucket"],
+                "Resource": [
+                  "arn:aws:s3:::${FILESCAN_SOURCE_BUCKET}",
+                  "arn:aws:s3:::${FILESCAN_SOURCE_BUCKET}/*"
+                ]
+              },
+              {
+                "Effect": "Allow",
+                "Action": ["s3:GetObject", "s3:PutObject", "s3:PutObjectTagging", "s3:ListBucket"],
+                "Resource": [
+                  "arn:aws:s3:::${FILESCAN_DEST_BUCKET}",
+                  "arn:aws:s3:::${FILESCAN_DEST_BUCKET}/*"
+                ]
+              },
+              {
+                "Effect": "Allow",
+                "Action": ["sqs:GetQueueUrl", "sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:GetQueueAttributes"],
+                "Resource": "arn:aws:sqs:${AWS_REGION}:${AWS_ACCOUNT_ID}:${FILESCAN_SQS_QUEUE_NAME}"
+              }
+            ]
+          }
+          EOF
+
+          if aws iam get-role --role-name "$ROLE_NAME" >/dev/null 2>&1; then
+            echo "Role $ROLE_NAME already exists — updating trust policy."
+            aws iam update-assume-role-policy \
+              --role-name "$ROLE_NAME" \
+              --policy-document file://filescan-trust-policy.json
+          else
+            aws iam create-role \
+              --role-name "$ROLE_NAME" \
+              --assume-role-policy-document file://filescan-trust-policy.json
+            echo "Created role $ROLE_NAME."
+          fi
+
+          aws iam put-role-policy \
+            --role-name "$ROLE_NAME" \
+            --policy-name dpn-file-scan-service-permissions \
+            --policy-document file://filescan-permissions-policy.json
+
+          ROLE_ARN=$(aws iam get-role --role-name "$ROLE_NAME" --query "Role.Arn" --output text)
+          echo "IRSA role ready: $ROLE_ARN"
+          echo "Set this as serviceAccount.irsaRoleArn in the chart's AWS values file."
+
+      - name: Create Secrets Manager Entries for file-scan-service
+        if: ${{ inputs.cloud == 'aws' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SECRET_PREFIX="dpn/${{ inputs.environment }}-${{ inputs.cluster }}/file-scan-service"
+
+          for key in FILESCAN_CLIENT_ID FILESCAN_CLIENT_SECRET; do
+            SECRET_NAME="$SECRET_PREFIX/$key"
+            if aws secretsmanager describe-secret --secret-id "$SECRET_NAME" >/dev/null 2>&1; then
+              echo "Secret $SECRET_NAME already exists — leaving value untouched."
+            else
+              aws secretsmanager create-secret \
+                --name "$SECRET_NAME" \
+                --secret-string "REPLACE_ME" >/dev/null
+              echo "Created $SECRET_NAME with a REPLACE_ME placeholder — update it with the real value before relying on it."
+            fi
+          done

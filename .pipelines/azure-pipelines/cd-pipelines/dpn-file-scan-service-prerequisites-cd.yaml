@@ -1,0 +1,412 @@
+trigger: none
+
+pool:
+  name: '<<YOUR AGENT POOL>>'
+
+parameters:
+  - name: serviceConnection
+    type: string
+
+  - name: storageAccountName
+    type: string
+
+  - name: storageResourceGroup
+    type: string
+
+  - name: containerName
+    type: string
+    default: 'dp-consumer-raw'
+
+  - name: serviceBusNamespace
+    type: string
+
+  - name: serviceBusResourceGroup
+    type: string
+    default: <<your specific value>>  
+
+  - name: serviceBusTopicName
+    type: string
+    default: 'dpn-fileupload-scan-results'
+
+  - name: serviceBusSubscriptionName
+    type: string
+    default: 'dpn-fileupload-scan-results-sub'
+
+  - name: defenderEventSubscriptionName
+    type: string
+    default: 'dpn-defender-malware-scan-sub' 
+ 
+  - name: eventGridResourceGroup
+    type: string   
+    default: '<<your specific value>>'
+
+  - name: eventGridTopicResourceGroup
+    type: string
+    default: '<<your specific value>>'
+
+  - name: eventGridCustomTopicName
+    type: string
+    default: '<<your specific value>>'
+
+  - name: approval_group
+    displayName: 'Approval Group'
+    type: string
+    default: dsi-dev
+    values:
+      - dsi-dev
+
+stages:
+- stage: DeployPrerequisites
+  jobs:
+
+  - deployment: Deploy
+    environment: ${{ parameters.approval_group }}
+
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          # ------------------------------------------------------------------
+          # Login
+          # ------------------------------------------------------------------
+          - task: AzureCLI@2
+            displayName: 'Login to Azure'
+            inputs:
+              azureSubscription: '${{ parameters.serviceConnection }}'
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                set -e
+
+                SUBSCRIPTION_ID=$(az account show --query id -o tsv)
+
+                echo "Subscription: $SUBSCRIPTION_ID"
+
+                echo "##vso[task.setvariable variable=subscriptionId]$SUBSCRIPTION_ID"
+
+
+          # ------------------------------------------------------------------
+          # Create Service Bus Topic
+          # ------------------------------------------------------------------
+
+          - task: AzureCLI@2
+            displayName: 'Create Service Bus Topic'
+            inputs:
+              azureSubscription: '${{ parameters.serviceConnection }}'
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                set -e
+
+                az servicebus topic show \
+                  --resource-group "${{ parameters.serviceBusResourceGroup }}" \
+                  --namespace-name "${{ parameters.serviceBusNamespace }}" \
+                  --name "${{ parameters.serviceBusTopicName }}" \
+                  --query name -o tsv 2>/dev/null || \
+                az servicebus topic create \
+                  --resource-group "${{ parameters.serviceBusResourceGroup }}" \
+                  --namespace-name "${{ parameters.serviceBusNamespace }}" \
+                  --name "${{ parameters.serviceBusTopicName }}" \
+                  --max-size 5120 \
+                  --default-message-time-to-live P14D
+
+          - task: AzureCLI@2
+            displayName: 'Create Service Bus Subscription'
+            inputs:
+              azureSubscription: '${{ parameters.serviceConnection }}'
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                set -e
+
+                az servicebus topic subscription show \
+                  --resource-group "${{ parameters.serviceBusResourceGroup }}" \
+                  --namespace-name "${{ parameters.serviceBusNamespace }}" \
+                  --topic-name "${{ parameters.serviceBusTopicName }}" \
+                  --name "${{ parameters.serviceBusSubscriptionName }}" \
+                  >/dev/null 2>&1 || \
+                az servicebus topic subscription create \
+                  --resource-group "${{ parameters.serviceBusResourceGroup }}" \
+                  --namespace-name "${{ parameters.serviceBusNamespace }}" \
+                  --topic-name "${{ parameters.serviceBusTopicName }}" \
+                  --name "${{ parameters.serviceBusSubscriptionName }}"
+
+          # ------------------------------------------------------------------
+          # Enable Defender Malware Scanning
+          # ------------------------------------------------------------------
+
+          - task: AzureCLI@2
+            displayName: 'Enable Defender Malware Scanning'
+            inputs:
+              azureSubscription: '${{ parameters.serviceConnection }}'
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                set -e
+
+                DEFENDER_SETTINGS_URL="https://management.azure.com/subscriptions/$(subscriptionId)/resourceGroups/${{ parameters.storageResourceGroup }}/providers/Microsoft.Storage/storageAccounts/${{ parameters.storageAccountName }}/providers/Microsoft.Security/DefenderForStorageSettings/current?api-version=2025-06-01"
+
+                echo "Current Defender settings:"
+                az rest \
+                  --method GET \
+                  --url "$DEFENDER_SETTINGS_URL"
+
+                echo ""
+                echo "Retrieving Event Grid Topic ID..."
+
+                EVENTGRID_TOPIC_ID=$(az eventgrid topic show \
+                  --name "${{ parameters.eventGridCustomTopicName }}" \
+                  --resource-group "${{ parameters.eventGridResourceGroup }}" \
+                  --query id \
+                  -o tsv)        
+
+                echo "Event Grid Topic ID:"
+                echo "$EVENTGRID_TOPIC_ID"
+
+                cat > defender_body.json << EOF
+                {
+                  "properties": {
+                    "isEnabled": true,
+                    "overrideSubscriptionLevelSettings": true,
+                    "malwareScanning": {
+                      "onUpload": {
+                        "isEnabled": true,
+                        "capGBPerMonth": 10000
+                      },
+                      "scanResultsEventGridTopicResourceId": "$EVENTGRID_TOPIC_ID"
+                    },
+                    "sensitiveDataDiscovery": {
+                      "isEnabled": false
+                    }
+                  }
+                }
+                EOF
+
+                echo ""
+                echo "Payload being sent:"
+                cat defender_body.json
+
+                echo ""
+                echo "Submitting Defender configuration..."
+
+                az rest \
+                  --method PUT \
+                  --url "$DEFENDER_SETTINGS_URL" \
+                  --body @defender_body.json \
+                  --output json
+
+                echo ""
+                echo "Updated Defender settings:"
+
+                az rest \
+                  --method GET \
+                  --url "$DEFENDER_SETTINGS_URL"
+
+          # ------------------------------------------------------------------
+          # Enable System Assigned Identity on Event Grid Topic
+          # ------------------------------------------------------------------
+
+          - task: AzureCLI@2
+            displayName: 'Enable Event Grid Topic Managed Identity'
+            inputs:
+              azureSubscription: '${{ parameters.serviceConnection }}'
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                set -e
+
+                echo "Enabling System Assigned Identity..."
+
+                az eventgrid topic update \
+                  --resource-group "${{ parameters.eventGridTopicResourceGroup }}" \
+                  --name "${{ parameters.eventGridCustomTopicName }}" \
+                  --identity systemassigned
+
+                echo ""
+                echo "Topic Identity:"
+
+                az eventgrid topic show \
+                  --resource-group "${{ parameters.eventGridTopicResourceGroup }}" \
+                  --name "${{ parameters.eventGridCustomTopicName }}" \
+                  --query identity
+
+          # ------------------------------------------------------------------
+          # Grant Event Grid Topic MI Service Bus Sender
+          # ------------------------------------------------------------------
+
+          - task: AzureCLI@2
+            displayName: 'Grant Event Grid Topic Service Bus Sender'
+            inputs:
+              azureSubscription: '${{ parameters.serviceConnection }}'
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                set -e
+
+                TOPIC_PRINCIPAL_ID=$(az eventgrid topic show \
+                  --resource-group "${{ parameters.eventGridTopicResourceGroup }}" \
+                  --name "${{ parameters.eventGridCustomTopicName }}" \
+                  --query identity.principalId \
+                  -o tsv)
+
+                echo "Topic Principal ID:"
+                echo "$TOPIC_PRINCIPAL_ID"
+
+                SERVICEBUS_TOPIC_ID=$(az servicebus topic show \
+                  --resource-group "${{ parameters.serviceBusResourceGroup }}" \
+                  --namespace-name "${{ parameters.serviceBusNamespace }}" \
+                  --name "${{ parameters.serviceBusTopicName }}" \
+                  --query id \
+                  -o tsv)
+
+                az role assignment create \
+                  --assignee-object-id "$TOPIC_PRINCIPAL_ID" \
+                  --assignee-principal-type ServicePrincipal \
+                  --role "Azure Service Bus Data Sender" \
+                  --scope "$SERVICEBUS_TOPIC_ID" \
+                  || true
+
+
+          # ------------------------------------------------------------------
+          # Create Event Subscription via ARM REST
+          # ------------------------------------------------------------------
+
+          - task: AzureCLI@2
+            displayName: 'Create Event Subscription via ARM'
+            inputs:
+              azureSubscription: '${{ parameters.serviceConnection }}'
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                set -e
+
+                EVENTGRID_TOPIC_ID=$(az eventgrid topic show \
+                  --name "${{ parameters.eventGridCustomTopicName }}" \
+                  --resource-group "${{ parameters.eventGridResourceGroup }}" \
+                  --query id -o tsv)        
+
+                SERVICEBUS_TOPIC_ID=$(az servicebus topic show \
+                  --name "${{ parameters.serviceBusTopicName }}" \
+                  --namespace-name "${{ parameters.serviceBusNamespace }}" \
+                  --resource-group "${{ parameters.serviceBusResourceGroup }}" \
+                  --query id -o tsv)
+
+                SUB_NAME="${{ parameters.defenderEventSubscriptionName }}"
+
+                cat > eventsub.json << EOF
+                {
+                  "properties": {
+                    "deliveryWithResourceIdentity": {
+                      "destination": {
+                        "endpointType": "ServiceBusTopic",
+                        "properties": {
+                          "resourceId": "${SERVICEBUS_TOPIC_ID}"
+                        }
+                      },
+                      "identity": {
+                        "type": "SystemAssigned"
+                      }
+                    },
+                    "eventDeliverySchema": "EventGridSchema",
+                    "filter": {
+                      "subjectBeginsWith": "",
+                      "subjectEndsWith": ""
+                    },
+                    "retryPolicy": {
+                      "maxDeliveryAttempts": 30,
+                      "eventTimeToLiveInMinutes": 1440
+                    }
+                  }
+                }
+                EOF
+
+                echo "Creating Event Subscription..."
+                cat eventsub.json
+
+                az rest \
+                  --method PUT \
+                  --headers "Content-Type=application/json" \
+                  --url "${EVENTGRID_TOPIC_ID}/providers/Microsoft.EventGrid/eventSubscriptions/${SUB_NAME}?api-version=2023-06-01-preview" \
+                  --body @eventsub.json
+
+                echo ""
+                echo "Created Event Subscription"
+
+                az rest \
+                  --method GET \
+                  --url "${EVENTGRID_TOPIC_ID}/providers/Microsoft.EventGrid/eventSubscriptions/${SUB_NAME}?api-version=2023-06-01-preview"
+
+          # ------------------------------------------------------------------
+          # Verify Event Grid Configuration
+          # ------------------------------------------------------------------
+
+          - task: AzureCLI@2
+            displayName: 'Verify Event Grid Configuration'
+            inputs:
+              azureSubscription: '${{ parameters.serviceConnection }}'
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                set -e
+
+                EVENTGRID_TOPIC_ID=$(az eventgrid topic show \
+                  --name "${{ parameters.eventGridCustomTopicName }}" \
+                  --resource-group "${{ parameters.eventGridResourceGroup }}" \
+                  --query id -o tsv)        
+
+                SUB_NAME="${{ parameters.defenderEventSubscriptionName }}"
+
+                az rest \
+                  --method GET \
+                  --url "${EVENTGRID_TOPIC_ID}/providers/Microsoft.EventGrid/eventSubscriptions/${SUB_NAME}?api-version=2023-06-01-preview"
+
+          # ------------------------------------------------------------------
+          # Verify Event Subscription
+          # ------------------------------------------------------------------
+
+          - task: AzureCLI@2
+            displayName: 'Verify Event Subscription'
+            inputs:
+              azureSubscription: '${{ parameters.serviceConnection }}'
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                set -e
+
+                EVENTGRID_TOPIC_ID=$(az eventgrid topic show \
+                  --name "${{ parameters.eventGridCustomTopicName }}" \
+                  --resource-group "${{ parameters.eventGridResourceGroup }}" \
+                  --query id -o tsv)
+
+                SUB_NAME="${{ parameters.defenderEventSubscriptionName }}"
+
+                az rest \
+                  --method GET \
+                  --url "${EVENTGRID_TOPIC_ID}/providers/Microsoft.EventGrid/eventSubscriptions/${SUB_NAME}?api-version=2025-02-15"
+
+          # ------------------------------------------------------------------
+          # Create Storage Container
+          # ------------------------------------------------------------------
+
+          - task: AzureCLI@2
+            displayName: 'Create Storage Container'
+            inputs:
+              azureSubscription: '${{ parameters.serviceConnection }}'
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                set -e
+
+                EXISTS=$(az storage container exists \
+                  --account-name "${{ parameters.storageAccountName }}" \
+                  --name "${{ parameters.containerName }}" \
+                  --auth-mode login \
+                  --query exists -o tsv)
+
+                if [ "$EXISTS" != "true" ]; then
+                  az storage container create \
+                    --account-name "${{ parameters.storageAccountName }}" \
+                    --name "${{ parameters.containerName }}" \
+                    --auth-mode login \
+                    --public-access off
+                fi

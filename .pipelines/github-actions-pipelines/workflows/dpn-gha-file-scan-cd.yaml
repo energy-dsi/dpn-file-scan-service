@@ -1,0 +1,216 @@
+name: DPN CD - File Scan Service
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Select Environment"
+        required: true
+        default: "test"
+        type: choice
+        options:
+          - dev
+          - test
+
+      cluster:
+        description: "Target DPN Cluster"
+        required: true
+        default: "dpn01"
+        type: choice
+        options:
+          - dpn01
+          - dpn02
+
+      cloud:
+        description: "Target Cloud Provider"
+        required: true
+        default: "aws"
+        type: choice
+        options:
+          - azure
+          - aws
+          - gcp
+
+      imageTag:
+        description: "Image tag"
+        required: true
+        type: string
+
+      imageRepository:
+        description: "Image path AFTER <<GHCR IMAGE REGISTRY NAME>>/ (e.g. 1.0.1/file-scan-service) — leave blank to use the environment's configured repository"
+        required: false
+        default: ""
+        type: string
+
+env:
+  PARAMETERS_FILE: .github/config/${{ inputs.cloud }}/${{ inputs.environment }}-${{ inputs.cluster }}.json
+  PROJECT_NAME: dpn-file-scan-service
+  CHART_LOCATION: dpn-file-scan/charts/file-scan-service
+  VALUES_FILE: dpn-file-scan/charts/file-scan-service/values/${{ inputs.cloud }}/${{ inputs.environment }}-${{ inputs.cluster }}.yaml
+  HUB_ROLE_ARN: <<your specific value>>
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy:
+    name: Helm Deploy
+    runs-on: [self-hosted, vmss]
+    environment: ${{ inputs.environment }}-${{ inputs.cluster }}
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Applied Parameters
+        shell: bash
+        run: |
+          echo "environment=${{ inputs.environment }}"
+          echo "cluster=${{ inputs.cluster }}"
+          echo "cloud=${{ inputs.cloud }}"
+          echo "imageTag=${{ inputs.imageTag }}"
+          echo "imageRepository=${{ inputs.imageRepository }}"
+
+      - name: Read Deployment Config
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ ! -f "${PARAMETERS_FILE}" ]; then
+            echo "ERROR: ${PARAMETERS_FILE} not found!"
+            exit 1
+          fi
+
+          echo "Loading config from ${PARAMETERS_FILE}"
+          for key in $(jq -r 'keys_unsorted[]' "${PARAMETERS_FILE}"); do
+            value=$(jq -r ".\"$key\"" "${PARAMETERS_FILE}")
+            echo "${key}=${value}" >> "$GITHUB_ENV"
+            echo "Set ${key}"
+          done
+
+      - name: Cloud Login
+        uses: ./.github/actions/cloud-login
+        with:
+          cloud: ${{ inputs.cloud }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          aws-region: ${{ env.AWS_REGION }}
+          aws-account-id: ${{ env.AWS_ACCOUNT_ID }}
+          eks-cluster: ${{ env.EKS_CLUSTER }}
+
+      ###################################################################
+      # HELM DEPLOY
+      ###################################################################
+      - name: Helm Deploy
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          EXTRA_ARGS=()
+          if [ -n "${{ inputs.imageRepository }}" ]; then
+            EXTRA_ARGS+=(--set image.repository="<<GHCR IMAGE REGISTRY NAME>>/${{ inputs.imageRepository }}")
+          fi
+
+          echo "========================================"
+          echo "HELM DRY-RUN"
+          echo "========================================"
+          helm lint "$CHART_LOCATION"
+          helm upgrade --install "$PROJECT_NAME" "$CHART_LOCATION" \
+            --set namespace="$NAMESPACE",image.tag="${{ inputs.imageTag }}" \
+            "${EXTRA_ARGS[@]}" \
+            -n "$NAMESPACE" -f "$VALUES_FILE" \
+            --dry-run --debug >/dev/null
+          echo "Helm dry-run OK"
+
+          echo "========================================"
+          echo "HELM DEPLOY"
+          echo "========================================"
+          # NOTE: no --wait/--timeout here — see certificate-manager-cd.yml for
+          # why long-lived Helm watches against the EKS API from this runner
+          # are unreliable. Poll readiness separately instead.
+          if ! helm upgrade --install "$PROJECT_NAME" "$CHART_LOCATION" \
+            --set namespace="$NAMESPACE",image.tag="${{ inputs.imageTag }}" \
+            "${EXTRA_ARGS[@]}" \
+            -n "$NAMESPACE" -f "$VALUES_FILE"; then
+            echo "::error::Helm Deploy (helm upgrade --install) failed."
+            echo "::group::DEBUG - helm status"
+            helm status "$PROJECT_NAME" -n "$NAMESPACE" || true
+            echo "::endgroup::"
+            exit 1
+          fi
+          echo "Helm deploy call succeeded — polling rollout status separately..."
+
+          echo "========================================"
+          echo "POST-DEPLOY VERIFICATION"
+          echo "========================================"
+          ROLLOUT_OK=false
+          for attempt in 1 2 3 4 5; do
+            if kubectl rollout status deployment/"$PROJECT_NAME" -n "$NAMESPACE" --timeout=60s; then
+              ROLLOUT_OK=true
+              break
+            fi
+            echo "Rollout status attempt $attempt/5 did not complete within 60s — retrying..."
+            sleep 10
+          done
+
+          if [ "$ROLLOUT_OK" != "true" ]; then
+            echo "::error::Deployment $PROJECT_NAME did not report ready after 5 attempts."
+
+            echo "::group::DEBUG - helm status"
+            helm status "$PROJECT_NAME" -n "$NAMESPACE" || true
+            echo "::endgroup::"
+
+            echo "::group::DEBUG - pod describe"
+            kubectl describe pods -n "$NAMESPACE" -l app="$PROJECT_NAME" || true
+            echo "::endgroup::"
+
+            echo "::group::DEBUG - SecretProviderClass"
+            kubectl get secretproviderclass -n "$NAMESPACE" || true
+            kubectl describe secretproviderclass -n "$NAMESPACE" "$PROJECT_NAME-kv-secrets" || true
+            echo "::endgroup::"
+
+            echo "::group::DEBUG - namespace events (most recent 50)"
+            kubectl get events -n "$NAMESPACE" --sort-by='.lastTimestamp' | tail -n 50 || true
+            echo "::endgroup::"
+
+            exit 1
+          fi
+
+          kubectl get deployment "$PROJECT_NAME" -n "$NAMESPACE"
+
+      ###################################################################
+      # CAPTURE DEPLOYED IMAGE DIGEST
+      ###################################################################
+      - name: Capture Deployed Image Digest
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          IMAGE_DIGEST=$(kubectl get pods -n "$NAMESPACE" \
+            -l app="$PROJECT_NAME" \
+            -o jsonpath='{.items[0].status.containerStatuses[0].imageID}')
+
+          if [ -z "$IMAGE_DIGEST" ]; then
+            echo "::error::Could not resolve deployed image digest from pod status"
+            exit 1
+          fi
+
+          echo "Deployed image digest: $IMAGE_DIGEST"
+
+          mkdir -p "$GITHUB_WORKSPACE/deployed-digest"
+
+          {
+            echo "$IMAGE_DIGEST"
+            echo "component=$PROJECT_NAME"
+            echo "environment=${{ inputs.environment }}"
+            echo "dpncluster=${{ inputs.cluster }}"
+            echo "imageTag=${{ inputs.imageTag }}"
+          } > "$GITHUB_WORKSPACE/deployed-digest/$PROJECT_NAME-digest.txt"
+
+          echo "Digest written to $GITHUB_WORKSPACE/deployed-digest"
+
+      - name: Publish Deployed Image Digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: deployed-image-digest
+          path: deployed-digest/

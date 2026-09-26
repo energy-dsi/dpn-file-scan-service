@@ -1,0 +1,116 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Values.app.name }}
+  namespace: {{ .Values.namespace }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      app: {{ .Values.app.name }}
+  template:
+    metadata:
+      labels:
+        app: {{ .Values.app.name }}
+    spec:
+      containers:
+        - name: {{ .Values.app.name }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          ports:
+            - containerPort: {{ .Values.service.targetPort }}
+              name: {{ .Values.service.portName }}
+          # envFrom:
+          #   - secretRef:
+          #       name: "{{ .Values.app.name }}-secrets"
+          env:
+            - name: ENVIRONMENT
+              value: {{ .Values.env.environment | quote }}
+            - name: LOG_LEVEL
+              value: {{ .Values.env.logLevel | quote }}
+            - name: ENABLE_TELEMETRY
+              value: {{ .Values.env.enableTelemetry | quote }}
+            - name: TESTING
+              value: {{ .Values.env.testing | quote }}
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ .Values.env.otelEndpoint | quote }}
+            - name: OTEL_EXPORTER_OTLP_PROTOCOL
+              value: {{ .Values.env.otelExporterProtocol | quote }}
+            - name: OTEL_EXPORTER_OTLP_CERTIFICATE
+              value: {{ .Values.env.otelExporterCertificate | quote }}
+            # otel_truststore.py reads the dpn-tls truststore.jks at this
+            # path and, once configure() runs successfully, OVERWRITES
+            # OTEL_EXPORTER_OTLP_CERTIFICATE above with a temporary PEM
+            # extracted from it - the value set above is only the fallback
+            # used if no truststore is found here. Requires an image built
+            # from a source tree containing otel_truststore.py's byte-sniffing
+            # dispatch (checks the file's actual header, not its .jks
+            # extension) - this file's real bytes are PKCS#12, matching how
+            # Kafka itself reads it (ssl.truststore.type=PKCS12).
+            - name: TRUSTSTORE_PATH
+              value: {{ .Values.env.truststorePath | quote }}
+            # The truststore password - the dpn-tls Secret below only carries
+            # the truststore file itself, not its password. Read straight
+            # from tls-auth-secret (the universal DPN platform password,
+            # created once by dpn-tls-cd) instead of an independent Key Vault
+            # re-sync of the same value.
+            - name: TRUSTSTORE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: tls-auth-secret
+                  key: TRUSTSTORE_PASSWORD
+            - name: SERVICE_NAME
+              value: {{ .Values.env.serviceName | quote }}
+            - name: SERVICE_VERSION
+              value: {{ .Values.env.serviceVersion | quote }}
+            - name: SERVICE_BUS_NAMESPACE
+              value: {{ .Values.env.serviceBusNamespace | quote }}
+            - name: SOURCE_STORAGE_ACCOUNT
+              value: {{ .Values.env.sourceStorageAccount | quote }}
+            - name: SOURCE_CONTAINER
+              value: {{ .Values.env.sourceContainer | quote }}
+            - name: DEST_STORAGE_ACCOUNT
+              value: {{ .Values.env.destStorageAccount | quote }}
+            - name: DEST_CONTAINER
+              value: {{ .Values.env.destContainer | quote }}
+            - name: CLOUD_PROVIDER_TYPE
+              value: {{ .Values.env.cloudprovidertype | quote }}
+            - name: TENANT_ID
+              value: {{ .Values.env.tenantId | quote }}
+            - name: TOPIC_NAME
+              value: {{ .Values.env.topicname | quote }}
+            - name: SUBSCRIPTION_NAME
+              value: {{ .Values.env.subscriptionname | quote }}
+            - name: CLIENT_ID_FILE
+              value: {{ .Values.env.clientIdFile | quote }}
+            - name: CLIENT_SECRET_FILE
+              value: {{ .Values.env.clientSecretFile | quote }}
+
+          volumeMounts:
+            - name: keyvault-secrets
+              mountPath: "/mnt/keyvault"
+              readOnly: true
+            - name: dpn-tls
+              mountPath: "/etc/secrets"
+              readOnly: true
+
+      volumes:
+        - name: keyvault-secrets
+          csi:
+            driver: secrets-store.csi.k8s.io
+            readOnly: true
+            volumeAttributes:
+              secretProviderClass: "{{ .Values.app.name }}-kv-secrets"
+        # Reuses the existing Kafka TLS Secret (dpn-tls), which already carries
+        # the truststore.jks (PKCS#12 despite the .jks name) mounted at
+        # /etc/secrets. otel_truststore.py extracts its CA to a temporary PEM
+        # rather than needing a separate OTEL-specific truststore. This is a
+        # plain Kubernetes Secret volume (not CSI) - the Secret must already
+        # exist in this deployment's namespace.
+        - name: dpn-tls
+          secret:
+            secretName: {{ .Values.env.otelTlsSecretName | default "dpn-tls" }}
