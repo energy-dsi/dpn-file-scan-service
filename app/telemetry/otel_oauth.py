@@ -26,6 +26,13 @@ OTEL_OAUTH_TOKEN_ENDPOINT_URL is unset, `build_auth()` returns None and the
 exporters run without an Authorization header at all, exactly as before this
 module existed.
 
+OTEL_OAUTH_CA_LOCATION (the CA used to verify the token endpoint's own TLS
+certificate) accepts a plain PEM file OR a .jks truststore - `requests`
+cannot read JKS (or PKCS#12) directly, so a .jks path is detected by
+extension and extracted to a temporary PEM first (see
+_materialise_jks_as_pem). The JKS password is TRUSTSTORE_PASSWORD, the same
+password the rest of the DPN PKI is built with.
+
 The client secret is OTEL_OAUTH_CLIENT_SECRET (or, preferably,
 OTEL_OAUTH_CLIENT_SECRET_FILE pointing at a mounted secret) - a dedicated
 Keycloak credential for the dpn-service-client client. It is NOT the Azure
@@ -37,7 +44,10 @@ now holds its own credential.
 
 from __future__ import annotations
 
+import atexit
 import logging
+import os
+import tempfile
 import threading
 import time
 from typing import Optional
@@ -135,6 +145,115 @@ class ClientCredentialsAuth(AuthBase):
         request.headers["Authorization"] = f"Bearer {self._current_token()}"
         return request
 
+    def bearer_header(self) -> dict:
+        """Return a fresh {"authorization": "Bearer <token>"} dict.
+
+        For consumers that cannot use this object as a `requests` auth
+        callable (e.g. the gRPC exporter, which only takes a static headers
+        dict/tuple at construction time - it never calls back into this
+        object per-request the way `requests.Session.auth` does). Unlike
+        __call__, which is invoked fresh on every HTTP request, a header
+        fetched this way is fixed for the lifetime of whatever it is attached
+        to and will NOT be refreshed before it expires.
+
+        Lowercase key deliberately: gRPC metadata keys must be lowercase
+        ASCII (grpc-core rejects "Authorization" outright with "Illegal
+        header key"), unlike HTTP header names, which are case-insensitive.
+        """
+        return {"authorization": f"Bearer {self._current_token()}"}
+
+
+def _extract_jks_ca_pem(path: str, password: Optional[str]) -> bytes:
+    """Return every trusted certificate in a JKS truststore as PEM bytes.
+
+    `requests`' `verify=` can only read a PEM CA bundle - it cannot parse JKS
+    any more than it could parse PKCS#12 (see the module docstring for the
+    OTEL_OAUTH_CA_LOCATION=.p12 failure this was written to fix). `pyjks` (the
+    only Python library that reads the JKS binary format) is used to open the
+    store and pull out its trustedCertEntry items only - no private key
+    material is ever touched, since this is a truststore, not a keystore.
+    """
+    try:
+        import jks
+    except ImportError as exc:  # pragma: no cover - depends on the environment
+        raise TokenFetchError(
+            f"OTEL_OAUTH_CA_LOCATION {path} is a .jks file but the 'pyjks' "
+            "package is not installed; it is required to read JKS from Python"
+        ) from exc
+
+    try:
+        from cryptography import x509
+        from cryptography.hazmat.primitives.serialization import Encoding
+    except ImportError as exc:  # pragma: no cover - depends on the environment
+        raise TokenFetchError(
+            f"OTEL_OAUTH_CA_LOCATION {path} is a .jks file but the "
+            "'cryptography' package is not installed; it is required to "
+            "convert JKS certificates to PEM"
+        ) from exc
+
+    try:
+        keystore = jks.KeyStore.load(path, password or "")
+    except Exception as exc:
+        raise TokenFetchError(
+            f"could not open JKS truststore {path}: {exc}. Either the "
+            "password (TRUSTSTORE_PASSWORD) does not match the password "
+            "the store was built with, or the file has been altered since "
+            "it was created (JKS covers the whole store with an integrity "
+            "hash)."
+        ) from exc
+
+    certs = [
+        x509.load_der_x509_certificate(entry.cert)
+        for entry in keystore.certs.values()
+    ]
+
+    if not certs:
+        raise TokenFetchError(
+            f"JKS truststore {path} opened successfully but contains no "
+            "certificates"
+        )
+
+    return b"".join(cert.public_bytes(Encoding.PEM) for cert in certs)
+
+
+def _materialise_jks_as_pem(path: str) -> str:
+    """Extract *path* (a .jks file) to a temporary PEM and return its path.
+
+    Reuses TRUSTSTORE_PASSWORD - the same password the rest of the DPN stack
+    (Keycloak's KC_HTTPS_TRUST_STORE_PASSWORD, Kafka UI's
+    -Djavax.net.ssl.trustStorePassword) is built with, rather than inventing
+    a second OAuth-specific password setting for what is the same PKI. The
+    temp file is cleaned up at interpreter exit; its contents are a public CA,
+    so a leak on a hard kill is untidy rather than a disclosure.
+    """
+    pem = _extract_jks_ca_pem(path, Settings.TRUSTSTORE_PASSWORD)
+
+    fd, pem_path = tempfile.mkstemp(prefix="oauth-ca-", suffix=".pem")
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(pem)
+    except Exception:
+        os.unlink(pem_path)
+        raise
+
+    atexit.register(lambda: os.path.exists(pem_path) and os.unlink(pem_path))
+
+    _LOG.info("OAuth token-endpoint CA trust taken from JKS truststore %s", path)
+    return pem_path
+
+
+def _resolve_ca_verify(ca_location, fallback: "bool | str"):
+    """Return the *verify* value for the token endpoint's TLS check.
+
+    A .jks CA location is extracted to a temporary PEM first, since
+    `requests` cannot read JKS directly; anything else (a PEM path, or
+    nothing at all) is passed through unchanged.
+    """
+    if ca_location and str(ca_location).lower().endswith(".jks"):
+        return _materialise_jks_as_pem(ca_location)
+
+    return ca_location or fallback
+
 
 def _resolve_client_secret() -> Optional[str]:
     """Return the OAuth client secret: a mounted file wins over the raw env var."""
@@ -179,6 +298,21 @@ def build_auth(verify: "bool | str" = True) -> Optional[ClientCredentialsAuth]:
             "is; OAuth cannot be configured without a secret."
         )
 
-    ca_location = Settings.OTEL_OAUTH_CA_LOCATION or verify
+    ca_verify = _resolve_ca_verify(Settings.OTEL_OAUTH_CA_LOCATION, verify)
 
-    return ClientCredentialsAuth(token_url, client_id, client_secret, verify=ca_location)
+    return ClientCredentialsAuth(token_url, client_id, client_secret, verify=ca_verify)
+
+
+def bearer_header_tuple(
+    auth: Optional[ClientCredentialsAuth],
+) -> "tuple[tuple[str, str], ...]":
+    """Return a gRPC-exporter-shaped headers tuple, or empty when auth is None.
+
+    Fetches the token once, immediately - see ClientCredentialsAuth.bearer_header
+    for why this is a one-shot value rather than a live-refreshing one.
+    """
+    if auth is None:
+        return ()
+
+    header = auth.bearer_header()
+    return tuple(header.items())
