@@ -1,0 +1,88 @@
+namespace: ns-dpn-01
+
+image:
+  repository: "<<your specific value>>"
+  tag: ""
+  pullPolicy: Always
+
+replicaCount: 1
+
+keyvault:
+  name: <<your specific value>>
+  clientID: <<your specific value>>
+  tenantId: "<<your specific value>>"
+
+  objects:
+    - name: FILESCAN-CLIENT-ID
+      type: secret
+
+    - name: FILESCAN-CLIENT-SECRET
+      type: secret
+
+    # Password for the dpn-tls JKS truststore (truststore.jks), which itself
+    # is only a Kubernetes Secret holding the cert file, not the password.
+    - name: UNIVERSAL-DPN-CERT-PASSWORD
+      type: secret
+
+    # dpn-service-client's Keycloak client-credentials secret - the same
+    # client (and Key Vault object) oauth2-proxy already depends on.
+    - name: KC-SERVICE-CLIENT-SECRET
+      type: secret
+
+  # Key Vault object name of the truststore password, synced into a native
+  # Kubernetes Secret via the CSI driver's secretObjects mechanism (see
+  # secret_provider_class.yaml) and injected as TRUSTSTORE_PASSWORD.
+  truststorePasswordSecretName: "UNIVERSAL-DPN-CERT-PASSWORD"
+
+  # Key Vault object name of the dpn-service-client secret, synced the same
+  # way and injected as OTEL_OAUTH_CLIENT_SECRET.
+  otelOauthClientSecretName: "KC-SERVICE-CLIENT-SECRET"
+
+env:
+  environment: "development"
+  logLevel: "info"
+
+  enableTelemetry: "true"
+  testing: "false"
+  otelEndpoint: "dpn-otel-collector.ns-dpn-health-01.svc.cluster.local:4318"
+  otelExporterProtocol: "http/protobuf"
+  # Reuses the existing Kafka TLS Secret (dpn-tls), mounted at
+  # /etc/secrets by deployment.yaml. truststore.jks is actually PKCS#12
+  # despite its .jks name - the same file Kafka itself reads with
+  # ssl.truststore.type=PKCS12 - so otel_truststore.py (byte-sniffing dispatch,
+  # not extension-based) decrypts it with TRUSTSTORE_PASSWORD below and
+  # extracts its CA to a temporary PEM, overwriting otelExporterCertificate.
+  otelExporterCertificate: "/etc/secrets/truststore.jks"
+  truststorePath: "/etc/secrets/truststore.jks"
+  otelTlsSecretName: "dpn-tls"
+
+  otelOauthEnabled: "true"
+  otelOauthClientId: "dpn-service-client"
+  otelOauthTokenEndpointUrl: "https://dpn-keycloak.ns-dpn-01.svc.cluster.local:8443/realms/dpn-realm/protocol/openid-connect/token"
+  # Left empty deliberately: otel_oauth.py's _resolve_ca_verify() dispatches
+  # on the ".jks" extension and calls pyjks, which expects a real JKS binary
+  # format - but truststore.jks here is actually PKCS#12 (see the comment on
+  # otelExporterCertificate above), so pointing this at that path crashes
+  # startup with "Not a JKS or JCEKS keystore". Leaving it unset falls back
+  # to the OTLP CA (certificate_file), which is already correctly extracted
+  # via otel_truststore.py's byte-sniffing dispatch - the same CA, reached
+  # the working way. Tracked as a bug in otel_oauth.py to fix properly
+  # (should byte-sniff like otel_truststore.py instead of trusting the
+  # extension) rather than a permanent config choice.
+  otelOauthCaLocation: ""
+
+  serviceName: "dpn-file-scan-service"
+  serviceVersion: "1.0.0"
+
+  serviceBusNamespace: "<<your specific value>>"
+  sourceStorageAccount: "<<your specific value>>"
+  sourceContainer: "dp-consumer-raw"
+  destStorageAccount: "<<your specific value>>"
+  destContainer: "dp-consumer-stage"
+
+  cloudprovidertype: "AZURE"
+  tenantId: "<<your specific value>>"
+  topicname: "dpn-fileupload-scan-results"
+  subscriptionname: "dpn-fileupload-scan-results-sub"
+  clientIdFile: "/mnt/keyvault/FILESCAN-CLIENT-ID"
+  clientSecretFile: "/mnt/keyvault/FILESCAN-CLIENT-SECRET"

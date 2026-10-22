@@ -1,0 +1,248 @@
+# =============================================================================
+# File Scan Service - ROLLBACK pipeline
+# -----------------------------------------------------------------------------
+# Same structure as the install CD (dpn-file-scan-service-cd.yml) with the
+# deploy-only steps removed. Rolls the Helm release back to a previous revision.
+#
+# `revision` selects the target:
+#   0 (default) -> the previous stable release (Helm's default rollback target)
+#   N           -> a specific revision number provided by the user
+# =============================================================================
+
+parameters:
+- name: ServiceConnection
+  displayName: 'ServiceConnection details'
+  type: string
+  default: 'sc-dpn-dev-001'
+  values:
+      - sc-dpn-dev-001
+      - sc-dpn-dev-002
+      - sc-dpn-test-001
+      - sc-dpn-test-002
+      - sc-dpn-pdev-ppd-001
+      - sc-dpn-ptest-ppd-001
+      - sc-dpn-puat-ppd-001
+
+- name: environment
+  displayName: Environment Name
+  type: string
+  default: 'dev'
+  values:
+      - dev
+      - devtest
+      - test
+      - pdev
+      - ptest
+      - puat
+
+# NOTE: dpncluster applies to dev/devtest/test only (dpn01 + dpn02).
+# pdev/ptest/puat run on dpn01 only; selecting dpn02 for them fails fast
+# in the "Read Environment Variables" guard below.
+- name: dpncluster
+  displayName: Target DPN Cluster (dpn02 = dev/devtest/test only)
+  type: string
+  default: dpn01
+  values:
+    - dpn01
+    - dpn02
+
+# Target Helm revision. 0 = previous stable release; a positive number = that
+# specific revision (from `helm history`, printed before the rollback runs).
+- name: revision
+  displayName: 'Revision number (0 = previous stable release)'
+  type: string
+  default: '0'
+
+# NOTE: the approver group is resolved automatically from the environment
+# (see APPROVAL_GROUP variable): dev -> dsi-dev, devtest/test -> dsi-test,
+# pdev/ptest/puat -> dsi-ppd.
+
+trigger:
+  - none
+
+pool:
+  name: <<YOUR AGENT POOL>>
+
+variables:
+  - name: PROJECT_NAME
+    value: 'dpn-file-scan-service'
+  - name: SERVICE_CONNECTION
+    value: '${{ parameters.ServiceConnection }}'
+  - name: TARGET_REVISION
+    value: '${{ parameters.revision }}'
+  # Config file resolution differs by environment family:
+  #   pdev/ptest/puat -> single-name file (config/<env>.json), dpn01 only
+  #   dev/devtest/test -> per-cluster file (config/<env>-<cluster>.json)
+  - ${{ if or(eq(parameters.environment, 'pdev'), eq(parameters.environment, 'ptest'), eq(parameters.environment, 'puat')) }}:
+    - name: PARAMETERS_FILE
+      value: ".pipelines/azure-pipelines/config/${{ parameters.environment }}.json"
+  - ${{ else }}:
+    - name: PARAMETERS_FILE
+      value: ".pipelines/azure-pipelines/config/${{ parameters.environment }}-${{ parameters.dpncluster }}.json"
+  # Approver group by environment family:
+  #   pdev/ptest/puat -> dsi-ppd (pre-prod)
+  #   devtest/test    -> dsi-test
+  #   dev             -> dsi-dev
+  - ${{ if or(eq(parameters.environment, 'pdev'), eq(parameters.environment, 'ptest'), eq(parameters.environment, 'puat')) }}:
+    - name: APPROVAL_GROUP
+      value: dsi-ppd
+  - ${{ elseif or(eq(parameters.environment, 'devtest'), eq(parameters.environment, 'test')) }}:
+    - name: APPROVAL_GROUP
+      value: dsi-test
+  - ${{ else }}:
+    - name: APPROVAL_GROUP
+      value: dsi-dev
+
+stages:
+- stage: Rollback
+  displayName: "Rollback"
+
+  jobs:
+  - deployment: Rollback
+    displayName: "Helm Rollback"
+    environment: $(APPROVAL_GROUP)
+
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - checkout: self
+          - script: |
+              echo "Environment: ${{ parameters.environment }}"
+              echo "PARAMETERS_FILE: $(PARAMETERS_FILE)"
+
+              # Guard: pdev/ptest/puat run on dpn01 only (no dpn02 infrastructure).
+              ENV="${{ parameters.environment }}"
+              CLUSTER="${{ parameters.dpncluster }}"
+              case "$ENV" in
+                pdev|ptest|puat)
+                  if [ "$CLUSTER" != "dpn01" ]; then
+                    echo "##vso[task.logissue type=error]Environment '$ENV' supports dpn01 only; '$CLUSTER' is not available. Re-run with dpncluster=dpn01."
+                    exit 1
+                  fi
+                  ;;
+              esac
+
+              # Guard: revision must be a non-negative integer.
+              REV="${{ parameters.revision }}"
+              if ! echo "$REV" | grep -Eq '^[0-9]+$'; then
+                echo "##vso[task.logissue type=error]revision '$REV' is not a non-negative integer. Use 0 for the previous stable release or a revision number from 'helm history'."
+                exit 1
+              fi
+
+              # Ensure parameters file exists
+              if [ -f "$(Build.SourcesDirectory)/$(PARAMETERS_FILE)" ]; then
+                echo "Reading parameters from $(PARAMETERS_FILE)"
+
+                # Loop through each key-value pair in the JSON file and set pipeline variables
+                for param in $(jq -r 'keys_unsorted | .[]' "$(Build.SourcesDirectory)/$(PARAMETERS_FILE)"); do
+                  value=$(jq -r ".\"$param\"" "$(Build.SourcesDirectory)/$(PARAMETERS_FILE)")
+
+                  # Set the parameter as an Azure DevOps pipeline variable
+                  echo "##vso[task.setvariable variable=$param]$value"
+                  echo "Set parameter $param with $value"
+                done
+              else
+                echo "Error: $(PARAMETERS_FILE) not found!"
+                exit 1
+              fi
+            displayName: "Read Environment Variables"
+
+          - task: AzureCLI@2
+            displayName: 'AKS Auth'
+            inputs:
+              azureSubscription: $(SERVICE_CONNECTION)
+              scriptType: 'bash'
+              addSpnToEnvironment: true
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                set -euo pipefail
+
+                echo "================================================="
+                echo "AZURE AUTH"
+                echo "================================================="
+                az account set --subscription $(AZURE_SUBSCRIPTION_ID)
+                az account show >/dev/null
+                echo "Azure auth OK"
+
+                echo "================================================="
+                echo "INSTALL TOOLS"
+                echo "================================================="
+                if ! command -v kubectl &>/dev/null || ! command -v kubelogin &>/dev/null; then
+                  echo "kubectl or kubelogin not found, installing..."
+                  az aks install-cli --client-version 1.36.1 --kubelogin-version v0.2.8
+                else
+                  echo "kubectl and kubelogin already installed, skipping install"
+                fi
+                kubectl version --client >/dev/null
+                kubelogin --version >/dev/null
+                helm version >/dev/null
+                echo "Tools installed"
+
+                echo "================================================="
+                echo "AKS CONTEXT"
+                echo "================================================="
+                az aks get-credentials \
+                  --resource-group $(RESOURCE_GROUP) \
+                  --name $(AKS_CLUSTER) \
+                  --overwrite-existing
+
+                kubelogin convert-kubeconfig -l azurecli
+                echo "AKS context ready"
+
+          - task: AzureCLI@2
+            displayName: 'Helm Rollback'
+            inputs:
+              azureSubscription: $(SERVICE_CONNECTION)
+              scriptType: 'bash'
+              addSpnToEnvironment: true
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                set -euo pipefail
+
+                # Release must exist to roll back.
+                if ! helm status $(PROJECT_NAME) -n $(NAMESPACE) >/dev/null 2>&1; then
+                  echo "##[error]Release '$(PROJECT_NAME)' not found in namespace '$(NAMESPACE)'. Nothing to roll back."
+                  exit 1
+                fi
+
+                echo "================================================="
+                echo "RELEASE HISTORY (before rollback)"
+                echo "================================================="
+                helm history $(PROJECT_NAME) -n $(NAMESPACE)
+
+                # revision 0 -> previous stable release; otherwise the given number.
+                REVISION_COUNT=$(helm history $(PROJECT_NAME) -n $(NAMESPACE) -o json | jq 'length')
+                if [ "$(TARGET_REVISION)" = "0" ] && [ "$REVISION_COUNT" -lt 2 ]; then
+                  echo "##[error]Only $REVISION_COUNT revision(s) exist; no previous release to roll back to."
+                  exit 1
+                fi
+
+                echo "================================================="
+                echo "HELM ROLLBACK"
+                echo "================================================="
+                echo "Rolling back release '$(PROJECT_NAME)' in namespace '$(NAMESPACE)' to revision '$(TARGET_REVISION)' (0 = previous stable release)"
+
+                helm rollback $(PROJECT_NAME) $(TARGET_REVISION) \
+                  -n $(NAMESPACE) \
+                  --wait \
+                  --timeout 5m
+
+                echo "Helm rollback OK"
+
+                echo "================================================="
+                echo "POST-ROLLBACK VERIFICATION"
+                echo "================================================="
+
+                kubectl get deployment $(PROJECT_NAME) -n $(NAMESPACE)
+
+                kubectl rollout status deployment/$(PROJECT_NAME) -n $(NAMESPACE) --timeout=180s
+
+                echo "================================================="
+                echo "RELEASE HISTORY (after rollback)"
+                echo "================================================="
+                helm history $(PROJECT_NAME) -n $(NAMESPACE)
+
+                echo "================================================="
+                echo "FILE SCAN ROLLBACK COMPLETE"
+                echo "================================================="
